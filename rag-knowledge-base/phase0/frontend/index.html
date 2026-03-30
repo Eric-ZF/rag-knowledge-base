@@ -1,0 +1,584 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RAG 学术知识库 — Phase 0 验证</title>
+  <style>
+    /* ── 基础重置 ─────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --ink-900: #1a1a2e;
+      --ink-700: #2d2d44;
+      --ink-500: #5c5c7a;
+      --paper:   #faf9f7;
+      --accent:  #c44b3a;
+      --border:  #e8e6e3;
+      --success: #3a6bc4;
+      --danger:  #9b3ac4;
+      --shadow:  0 2px 8px rgba(0,0,0,0.08);
+    }
+
+    body {
+      font-family: 'IBM Plex Sans', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      background: var(--paper);
+      color: var(--ink-700);
+      min-height: 100vh;
+    }
+
+    /* ── 顶栏 ─────────────────────────────────────────────── */
+    header {
+      height: 56px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      padding: 0 24px;
+      gap: 16px;
+      position: sticky;
+      top: 0;
+      background: var(--paper);
+    }
+    header h1 {
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--ink-900);
+    }
+    header .badge {
+      font-size: 11px;
+      padding: 2px 8px;
+      background: var(--accent);
+      color: #fff;
+      border-radius: 10px;
+    }
+    .header-right { margin-left: auto; display: flex; gap: 12px; align-items: center; }
+    #user-email { font-size: 13px; color: var(--ink-500); }
+
+    /* ── 主布局 ─────────────────────────────────────────────── */
+    main {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0;
+      height: calc(100vh - 56px);
+    }
+
+    /* ── 左侧：上传 + 论文列表 ─────────────────────────────── */
+    .panel-left {
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* 拖拽上传区 */
+    .upload-zone {
+      margin: 24px;
+      padding: 40px 24px;
+      border: 2px dashed var(--border);
+      border-radius: 12px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.2s, background 0.2s;
+    }
+    .upload-zone:hover, .upload-zone.drag-over {
+      border-color: var(--accent);
+      background: rgba(196, 75, 58, 0.04);
+    }
+    .upload-zone p { color: var(--ink-500); font-size: 14px; }
+    .upload-zone .hint { font-size: 12px; margin-top: 4px; color: var(--ink-500); opacity: 0.7; }
+
+    /* 论文列表 */
+    .paper-list { flex: 1; overflow-y: auto; padding: 0 24px 24px; }
+    .paper-list h3 {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--ink-500);
+      margin-bottom: 12px;
+    }
+    .paper-item {
+      padding: 12px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      margin-bottom: 8px;
+      cursor: pointer;
+      transition: box-shadow 0.15s;
+    }
+    .paper-item:hover { box-shadow: var(--shadow); }
+    .paper-item .title { font-size: 14px; font-weight: 500; color: var(--ink-900); }
+    .paper-item .meta { font-size: 12px; color: var(--ink-500); margin-top: 4px; }
+    .paper-item .status {
+      display: inline-block;
+      font-size: 11px;
+      padding: 1px 6px;
+      border-radius: 4px;
+      margin-top: 6px;
+    }
+    .status.ready    { background: rgba(58,107,196,0.12); color: var(--success); }
+    .status.processing { background: rgba(196,75,58,0.12); color: var(--accent); }
+    .status.error    { background: rgba(155,58,196,0.12); color: var(--danger); }
+
+    /* ── 右侧：RAG 问答 ─────────────────────────────────────── */
+    .panel-right {
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      background: #f5f4f2;
+    }
+
+    /* Quota Banner */
+    .quota-banner {
+      margin: 24px;
+      padding: 12px 16px;
+      background: white;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      font-size: 13px;
+      display: flex;
+      gap: 12px;
+      align-items: center;
+    }
+    .quota-banner .plan { font-weight: 600; color: var(--accent); }
+    .quota-banner .papers { color: var(--ink-500); }
+
+    /* Chat 区域 */
+    .chat-messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 0 24px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    .msg { max-width: 85%; }
+    .msg.user { align-self: flex-end; }
+    .msg.assistant { align-self: flex-start; }
+
+    .msg .bubble {
+      padding: 12px 16px;
+      border-radius: 12px;
+      font-size: 14px;
+      line-height: 1.6;
+    }
+    .msg.user .bubble {
+      background: var(--accent);
+      color: white;
+      border-bottom-right-radius: 4px;
+    }
+    .msg.assistant .bubble {
+      background: white;
+      color: var(--ink-700);
+      border: 1px solid var(--border);
+      border-bottom-left-radius: 4px;
+    }
+
+    .msg.assistant .citations {
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px solid var(--border);
+      font-size: 12px;
+      color: var(--ink-500);
+    }
+    .msg.assistant .citations .cite {
+      padding: 4px 8px;
+      background: #f0eeeb;
+      border-radius: 4px;
+      display: inline-block;
+      margin: 2px 4px 2px 0;
+      font-size: 11px;
+    }
+
+    /* Chat 输入 */
+    .chat-input-area {
+      padding: 16px 24px 24px;
+      background: #f5f4f2;
+    }
+    .chat-input-row {
+      display: flex;
+      gap: 8px;
+      background: white;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 8px 12px;
+      align-items: flex-end;
+    }
+    .chat-input-row textarea {
+      flex: 1;
+      border: none;
+      outline: none;
+      font-size: 14px;
+      font-family: inherit;
+      resize: none;
+      min-height: 24px;
+      max-height: 120px;
+      line-height: 1.5;
+    }
+    .btn-send {
+      width: 36px;
+      height: 36px;
+      border-radius: 8px;
+      background: var(--accent);
+      color: white;
+      border: none;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 16px;
+      transition: opacity 0.15s;
+      flex-shrink: 0;
+    }
+    .btn-send:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    /* ── Auth 表单 ──────────────────────────────────────────── */
+    #auth-screen {
+      position: fixed; inset: 0;
+      background: var(--paper);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 100;
+    }
+    .auth-card {
+      width: 360px;
+      background: white;
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 40px;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.08);
+    }
+    .auth-card h2 { font-size: 20px; color: var(--ink-900); margin-bottom: 8px; }
+    .auth-card p  { font-size: 13px; color: var(--ink-500); margin-bottom: 24px; }
+    .auth-card input {
+      width: 100%; padding: 10px 14px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 14px;
+      font-family: inherit;
+      margin-bottom: 12px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    .auth-card input:focus { border-color: var(--accent); }
+    .auth-card .btn-primary {
+      width: 100%; padding: 11px;
+      background: var(--accent);
+      color: white;
+      border: none;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      margin-top: 4px;
+    }
+    .auth-card .btn-primary:hover { opacity: 0.9; }
+    .auth-card .toggle {
+      text-align: center; margin-top: 16px;
+      font-size: 13px; color: var(--ink-500);
+    }
+    .auth-card .toggle a { color: var(--accent); cursor: pointer; text-decoration: none; }
+
+    /* ── 工具函数 ────────────────────────────────────────────── */
+    .hidden { display: none !important; }
+    .loading { opacity: 0.6; pointer-events: none; }
+    .error-msg { color: var(--danger); font-size: 13px; margin-top: 8px; text-align: center; }
+  </style>
+</head>
+<body>
+
+<!-- ── Auth 登录/注册 ──────────────────────────────────── -->
+<div id="auth-screen">
+  <div class="auth-card">
+    <h2>RAG 学术知识库</h2>
+    <p>Phase 0 验证 · 请登录或注册</p>
+    <div id="auth-error" class="error-msg hidden"></div>
+    <input id="email-input"    type="email"    placeholder="邮箱地址" autocomplete="email" />
+    <input id="password-input" type="password" placeholder="密码"    autocomplete="current-password" />
+    <button class="btn-primary" id="btn-login">登录</button>
+    <p class="toggle">还没有账号？<a id="btn-show-register">立即注册</a></p>
+  </div>
+</div>
+
+<!-- ── 主界面 ─────────────────────────────────────────── -->
+<div id="app" class="hidden">
+  <header>
+    <h1>📚 RAG 学术知识库</h1>
+    <span class="badge">Phase 0</span>
+    <div class="header-right">
+      <span id="user-email"></span>
+      <button onclick="logout()" style="font-size:12px;cursor:pointer;border:none;background:none;color:var(--ink-500);text-decoration:underline;">退出</button>
+    </div>
+  </header>
+
+  <main>
+    <!-- 左侧：上传 + 列表 -->
+    <div class="panel-left">
+      <div class="upload-zone" id="upload-zone">
+        <p>📄 拖拽 PDF 到这里，或点击选择文件</p>
+        <p class="hint">仅支持 PDF · 免费用户上限 20 篇</p>
+        <input type="file" id="file-input" accept=".pdf" style="display:none" />
+      </div>
+      <div id="upload-status" style="padding:0 24px;font-size:13px;color:var(--ink-500);"></div>
+      <div class="paper-list">
+        <h3>我的论文</h3>
+        <div id="papers-container"></div>
+      </div>
+    </div>
+
+    <!-- 右侧：RAG 问答 -->
+    <div class="panel-right">
+      <div class="quota-banner" id="quota-banner">
+        <span>套餐：<span class="plan" id="plan-label">Free</span></span>
+        <span class="papers" id="papers-label">已上传 0 / 20 篇</span>
+      </div>
+      <div class="chat-messages" id="chat-messages">
+        <div class="msg assistant">
+          <div class="bubble">
+            👋 欢迎！上传你的第一篇论文，然后在这里问我任何问题。<br/><br/>
+            例如：「这篇论文的核心结论是什么？」「作者用了什么方法？」
+          </div>
+        </div>
+      </div>
+      <div class="chat-input-area">
+        <div class="chat-input-row">
+          <textarea id="chat-input" rows="1" placeholder="问我关于你论文库的任何问题…"></textarea>
+          <button class="btn-send" id="btn-send" title="发送">↑</button>
+        </div>
+        <div id="chat-error" class="error-msg hidden"></div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script>
+  /* ── 全局状态 ──────────────────────────────────────────── */
+  let token = localStorage.getItem('token') || '';
+  let userEmail = localStorage.getItem('email') || '';
+  let userId = localStorage.getItem('userId') || '';
+  let collectionName = localStorage.getItem('collection') || '';
+  let plan = localStorage.getItem('plan') || 'free';
+  let uploading = false;
+
+  /* ── API 基础 ──────────────────────────────────────────── */
+  const API = 'http://localhost:8000';
+
+  async function api(method, path, body, noAuth) {
+    const headers = { 'Content-Type': 'application/json' };
+    if (!noAuth) headers['Authorization'] = `Bearer ${token}`;
+    const opts = { method, headers };
+    if (body) opts.body = JSON.stringify(body);
+    const r = await fetch(API + path, opts);
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || `HTTP ${r.status}`);
+    return data;
+  }
+
+  /* ── Auth ──────────────────────────────────────────────── */
+  function showApp() {
+    document.getElementById('auth-screen').classList.add('hidden');
+    document.getElementById('app').classList.remove('hidden');
+    document.getElementById('user-email').textContent = userEmail;
+    loadPapers();
+    loadQuota();
+  }
+
+  function logout() {
+    token = ''; userEmail = ''; userId = ''; collectionName = '';
+    localStorage.clear();
+    document.getElementById('auth-screen').classList.remove('hidden');
+    document.getElementById('app').classList.add('hidden');
+  }
+
+  document.getElementById('btn-login').onclick = async () => {
+    const email = document.getElementById('email-input').value;
+    const pw = document.getElementById('password-input').value;
+    const err = document.getElementById('auth-error');
+    err.classList.add('hidden');
+    try {
+      const data = await api('POST', '/auth/login', { email, password: pw }, true);
+      token = data.access_token;
+      // 重新获取用户信息
+      const meResp = await api('GET', '/me/quota');
+      userEmail = email;
+      localStorage.setItem('token', token);
+      localStorage.setItem('email', email);
+      // collection 从 login 响应或后续调用获取
+      // Phase 0 简单处理：存 email 做识别
+      showApp();
+    } catch(e) {
+      err.textContent = e.message;
+      err.classList.remove('hidden');
+    }
+  };
+
+  // 简化：注册后自动登录
+  document.getElementById('btn-show-register').onclick = async () => {
+    const email = document.getElementById('email-input').value;
+    const pw = document.getElementById('password-input').value;
+    const err = document.getElementById('auth-error');
+    err.classList.add('hidden');
+    try {
+      await api('POST', '/auth/register', { email, password: pw }, true);
+      document.getElementById('btn-login').click();
+    } catch(e) {
+      err.textContent = e.message;
+      err.classList.remove('hidden');
+    }
+  };
+
+  // 启动时检查 token
+  if (token) {
+    showApp();
+  }
+
+  /* ── 文件上传 ──────────────────────────────────────────── */
+  const uploadZone = document.getElementById('upload-zone');
+  const fileInput  = document.getElementById('file-input');
+
+  uploadZone.onclick = () => fileInput.click();
+  uploadZone.ondragover = e => { e.preventDefault(); uploadZone.classList.add('drag-over'); };
+  uploadZone.ondragleave = () => uploadZone.classList.remove('drag-over');
+  uploadZone.ondrop = e => {
+    e.preventDefault();
+    uploadZone.classList.remove('drag-over');
+    const f = e.dataTransfer.files[0];
+    if (f) uploadFile(f);
+  };
+  fileInput.onchange = e => { if (e.target.files[0]) uploadFile(e.target.files[0]); };
+
+  async function uploadFile(file) {
+    if (uploading) return;
+    if (!file.name.endsWith('.pdf')) {
+      alert('只支持 PDF 文件');
+      return;
+    }
+    uploading = true;
+    const status = document.getElementById('upload-status');
+    status.textContent = `⏳ 正在上传并索引: ${file.name} …`;
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+      const resp = await fetch(API + '/papers/upload', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` },
+        body: formData,
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.detail || '上传失败');
+      status.textContent = `✅ ${file.name} — 已索引 ${data.chunks_count} 个片段`;
+      loadPapers();
+      loadQuota();
+    } catch(e) {
+      status.textContent = `❌ ${e.message}`;
+    } finally {
+      uploading = false;
+    }
+  }
+
+  /* ── 论文列表 ──────────────────────────────────────────── */
+  async function loadPapers() {
+    try {
+      const papers = await api('GET', '/papers');
+      const container = document.getElementById('papers-container');
+      if (!papers.length) {
+        container.innerHTML = '<p style="font-size:13px;color:var(--ink-500)">还没有上传论文</p>';
+        return;
+      }
+      container.innerHTML = papers.map(p => `
+        <div class="paper-item">
+          <div class="title">${escapeHtml(p.title)}</div>
+          <div class="meta">${p.chunks_count ? p.chunks_count + ' 个片段' : ''}</div>
+          <span class="status ${p.status}">${p.status === 'ready' ? '✅ 已索引' : p.status === 'processing' ? '⏳ 索引中' : '❌ 失败'}</span>
+        </div>
+      `).join('');
+    } catch(e) { console.error(e); }
+  }
+
+  /* ── 配额显示 ──────────────────────────────────────────── */
+  async function loadQuota() {
+    try {
+      const q = await api('GET', '/me/quota');
+      document.getElementById('plan-label').textContent = q.plan.toUpperCase();
+      document.getElementById('papers-label').textContent =
+        `已上传 ${q.papers_used}${q.papers_limit === Infinity ? ' 篇（无限）' : ' / ' + q.papers_limit + ' 篇'}`;
+      plan = q.plan;
+    } catch(e) {}
+  }
+
+  /* ── 聊天 ──────────────────────────────────────────────── */
+  const chatInput = document.getElementById('chat-input');
+  const btnSend   = document.getElementById('btn-send');
+  const chatEl    = document.getElementById('chat-messages');
+
+  async function sendMessage() {
+    const text = chatInput.value.trim();
+    if (!text) return;
+    if (plan === 'free') {
+      const err = document.getElementById('chat-error');
+      err.textContent = 'Free 用户不支持 RAG 问答，请升级到 Pro';
+      err.classList.remove('hidden');
+      return;
+    }
+
+    // 添加用户消息
+    appendMsg('user', text);
+    chatInput.value = '';
+    const errEl = document.getElementById('chat-error');
+    errEl.classList.add('hidden');
+
+    // 发送请求
+    try {
+      const data = await api('POST', '/chat', {
+        question: text,
+        collection_name: collectionName || `user_${userId}`,
+        top_k: 5,
+      });
+      appendMsg('assistant', data.answer, data.citations);
+    } catch(e) {
+      errEl.textContent = e.message;
+      errEl.classList.remove('hidden');
+    }
+  }
+
+  function appendMsg(role, text, citations) {
+    const div = document.createElement('div');
+    div.className = `msg ${role}`;
+    let html = `<div class="bubble">${escapeHtml(text).replace(/\n/g, '<br/>')}`;
+    if (role === 'assistant' && citations && citations.length) {
+      html += '<div class="citations"><strong>引用：</strong>';
+      citations.forEach((c, i) => {
+        html += `<span class="cite">片段${i+1} — 页${c.page_number || '?'}</span>`;
+      });
+      html += '</div>';
+    }
+    html += '</div>';
+    div.innerHTML = html;
+    chatEl.appendChild(div);
+    chatEl.scrollTop = chatEl.scrollHeight;
+  }
+
+  btnSend.onclick = sendMessage;
+  chatInput.onkeydown = e => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage();
+    }
+  };
+  chatInput.style.height = 'auto';
+  chatInput.style.height = chatInput.scrollHeight + 'px';
+  chatInput.oninput = () => {
+    chatInput.style.height = 'auto';
+    chatInput.style.height = Math.min(chatInput.scrollHeight, 120) + 'px';
+  };
+
+  /* ── 工具 ──────────────────────────────────────────────── */
+  function escapeHtml(s) {
+    const d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+  }
+</script>
+</body>
+</html>
