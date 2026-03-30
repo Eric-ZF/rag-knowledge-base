@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "skills": {
+    "openclaw-tavily-search": {
+      "version": "0.1.0",
+      "installedAt": 1774597303048
+    },
+    "summarize": {
+      "version": "1.0.0",
+      "installedAt": 1774597304633
+    },
+    "memory-hygiene": {
+      "version": "1.0.0",
+      "installedAt": 1774597306962
+    },
+    "github": {
+      "version": "1.0.0",
+      "installedAt": 1774597308504
+    },
+    "agent-browser-clawdbot": {
+      "version": "0.1.0",
+      "installedAt": 1774597310193
+    },
+    "tencentcloud-lighthouse-skill": {
+      "version": "1.0.0",
+      "installedAt": 1774597312595
+    },
+    "tencent-docs": {
+      "version": "1.0.21",
+      "installedAt": 1774597318858
+    },
+    "tencent-cos-skill": {
+      "version": "1.0.6",
+      "installedAt": 1774597322211
+    },
+    "tencent-meeting-skill": {
+      "version": "1.0.0",
+      "installedAt": 1774597324890
+    },
+    "ima-skills": {
+      "version": "1.1.2",
+      "installedAt": 1774597327547
+    },
+    "gstack-openclaw": {
+      "version": "2.5.5",
+      "installedAt": 1774851724375
+    }
+  }
+}

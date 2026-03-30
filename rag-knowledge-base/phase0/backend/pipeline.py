@@ -1,22 +1,37 @@
 """
 Phase 0：PDF → Markdown → 分块 → Embedding → ChromaDB
-使用 LangChain + Unstructured 实现
+使用 LangChain + Unstructured + MiniMax Embedding
 
 ⚠️ Phase 0 使用 ChromaDB（内嵌式，无需 Docker）
 ⚠️ 生产环境（Phase 1+）切换为 Qdrant（Docker/集群部署）
 """
 
-import hashlib
 import os
 import re
 from pathlib import Path
 from typing import Any
 
 from langchain_core.documents import Document
-from langchain_openai import OpenAIEmbeddings
 from langchain_chroma import Chroma
-import chromadb
-from chromadb.config import Settings as ChromaSettings
+
+from config import MINIMAX_API_KEY, MINIMAX_GROUP_ID, MINIMAX_EMBED_ENDPOINT, EMBEDDING_MODEL
+
+
+# ─── MiniMax Embedding（LangChain 内置支持）──────────────
+def get_minimax_embeddings():
+    """
+    获取 MiniMax Embedding 实例
+    使用 LangChain 内置的 langchain_community.embeddings.MiniMaxEmbeddings
+    模型: eambo-01，1536 维
+    """
+    from langchain_community.embeddings import MiniMaxEmbeddings
+
+    return MiniMaxEmbeddings(
+        model=EMBEDDING_MODEL,
+        api_key=MINIMAX_API_KEY,
+        group_id=MINIMAX_GROUP_ID,
+        endpoint_url=MINIMAX_EMBED_ENDPOINT,
+    )
 
 
 # ─── PDF 解析 ──────────────────────────────────────────
@@ -40,7 +55,7 @@ def parse_pdf(pdf_path: str) -> list[Document]:
 def chunk_documents(documents: list[Document], chunk_size: int = 512) -> list[Document]:
     """
     将 LangChain Documents 按 token 数分块
-    chunk_size=512 tokens（约 2000 字符）
+    chunk_size=512 tokens（约 1000 字符中文）
     """
     from langchain.text_splitter import RecursiveCharacterTextSplitter
 
@@ -61,22 +76,25 @@ async def process_pdf(
     pdf_path: str,
     paper_id: str,
     collection_name: str,
-    openai_api_key: str,
+    openai_api_key: str = "",  # Phase 0 用 MiniMax，忽略此参数
     persist_directory: str = "/tmp/chromadb",
 ) -> dict[str, Any]:
     """
     完整 pipeline：PDF → 解析 → 分块 → 向量 → ChromaDB
-    Phase 0 用 ChromaDB（内嵌式，pip 安装，无需 Docker）
+    Phase 0 用 MiniMax Embedding + ChromaDB（内嵌式）
 
-    生产环境（Phase 1+）切换 Qdrant：
-    - 改用 langchain_qdrant.Qdrant
-    - 启动 Qdrant Docker 容器
-    - collection_name 改为 user_{user_id}
+    生产环境（Phase 1+）切换：
+    - Embedding: 换 BGE-large-zh（自托管）
+    - 向量库: 换 Qdrant（Docker 部署）
 
     Returns: {chunks_count}
     """
-    if not openai_api_key:
-        raise ValueError("OPENAI_API_KEY 未设置")
+    # 验证配置
+    if not MINIMAX_API_KEY or not MINIMAX_GROUP_ID:
+        raise ValueError(
+            "MINIMAX_API_KEY 和 MINIMAX_GROUP_ID 必须设置\n"
+            "获取 Group ID: https://platform.minimax.chat/user/login"
+        )
 
     # 1. 解析 PDF
     raw_docs = parse_pdf(pdf_path)
@@ -92,11 +110,8 @@ async def process_pdf(
     if not chunks:
         raise ValueError(f"PDF 分块失败，chunks 为空: {pdf_path}")
 
-    # 3. 初始化 Embedding
-    embeddings = OpenAIEmbeddings(
-        api_key=openai_api_key,
-        model="text-embedding-3-small",  # 1536 维
-    )
+    # 3. 初始化 MiniMax Embedding
+    embeddings = get_minimax_embeddings()
 
     # 4. 初始化 ChromaDB（内嵌式，持久化到磁盘）
     os.makedirs(persist_directory, exist_ok=True)
@@ -106,7 +121,7 @@ async def process_pdf(
 
     vectorstore = Chroma(
         collection_name=safe_collection_name,
-        embedding_function=embeddings,  # LangChain Chroma 会自动用这个做嵌入
+        embedding_function=embeddings,  # LangChain Chroma 会自动用 MiniMax Embedding
         persist_directory=persist_directory,
     )
 
@@ -125,6 +140,7 @@ async def process_pdf(
     vectorstore.add_texts(texts=texts, metadatas=metadatas)
 
     print(f"[{paper_id}] 向量写入完成，{len(chunks)} 个 chunks → collection '{safe_collection_name}'")
+    print(f"[{paper_id}] 使用 Embedding 模型: {EMBEDDING_MODEL}")
 
     return {"chunks_count": len(chunks)}
 
@@ -134,21 +150,16 @@ async def search_chunks(
     query: str,
     collection_name: str,
     top_k: int = 5,
-    openai_api_key: str = "",
+    openai_api_key: str = "",  # Phase 0 用 MiniMax
     persist_directory: str = "/tmp/chromadb",
 ) -> list[dict]:
     """
     将问题向量化 → ChromaDB 检索 → 返回相关 chunks
+    使用 MiniMax Embedding
     """
-    if not openai_api_key:
-        raise ValueError("OPENAI_API_KEY 未设置")
-
     safe_collection_name = re.sub(r"[^a-zA-Z0-9_]", "_", collection_name)
 
-    embeddings = OpenAIEmbeddings(
-        api_key=openai_api_key,
-        model="text-embedding-3-small",
-    )
+    embeddings = get_minimax_embeddings()
 
     vectorstore = Chroma(
         collection_name=safe_collection_name,

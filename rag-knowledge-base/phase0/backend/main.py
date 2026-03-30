@@ -1,61 +1,70 @@
 """
 Phase 0 验证 Sprint — FastAPI 入口
-目标：用最快的方式跑通 PDF上传 → RAG问答 全流程
+使用 MiniMax 模型（Embedding: eambo-01 / Chat: MiniMax-Text-01）
 """
 
 import os
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, UploadFile, File, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from auth import create_access_token, verify_token
+from config import validate_minimax_config, MINIMAX_API_KEY, MINIMAX_GROUP_ID
 from pipeline import process_pdf, search_chunks
 from chat import generate_answer
 
-# ─── 环境变量 ────────────────────────────────────────────
+# ─── 环境变量（Phase 0 MiniMax 配置）──────────────────
 load_dotenv()
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
+
 DEBUG = os.getenv("DEBUG", "true").lower() == "true"
+
+# ─── 启动时验证 MiniMax 配置 ────────────────────────────
+# 如果配置不完整打印警告（Phase 0 开发模式不阻塞启动）
+try:
+    validate_minimax_config()
+    print("✅ MiniMax 配置验证通过")
+    print(f"   Embedding: eambo-01 | Chat: MiniMax-Text-01")
+    print(f"   Group ID: {MINIMAX_GROUP_ID[:8]}...")
+except RuntimeError as e:
+    print(f"⚠️  {e}")
+    print("⚠️  Phase 0 需要配置 MiniMax API Key 和 Group ID 才能完整运行")
 
 # ─── FastAPI 初始化 ────────────────────────────────────
 app = FastAPI(
-    title="RAG 学术知识库 — Phase 0 验证",
-    version="0.1.0",
+    title="RAG 学术知识库 — Phase 0（MiniMax）",
+    version="0.2.0",
     debug=DEBUG,
 )
 
 # CORS：Phase 0 允许本地开发
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Phase 0 开发模式，生产环境要改
+    allow_origins=["*"],  # Phase 0 开发模式
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ─── 内存存储（Phase 0 简单方案）───────────────────────
+# ─── 内存存储（Phase 0 简单方案）──────────────────────
 # 生产环境换 PostgreSQL
-users_db: dict = {}  # {user_id: {email, password_hash, plan, papers: [paper_id]}}
-papers_db: dict = {}  # {paper_id: {user_id, title, status, chunks_count, qdrant_collection}}
+users_db: dict = {}  # {user_id: {email, password, plan, papers: [paper_id], collection}}
+papers_db: dict = {}  # {paper_id: {user_id, title, status, chunks_count, collection}}
 
 # ─── Pydantic 模型 ─────────────────────────────────────
 class ChatRequest(BaseModel):
     question: str
-    collection_name: str
+    collection_name: str | None = None  # 可选，不传则自动用用户 collection
     top_k: int = 5
 
 
 class ChatResponse(BaseModel):
     answer: str
-    citations: list[dict]  # [{paper_id, title, chunk_text, page}]
+    citations: list[dict]
 
 
 class PaperUploadResponse(BaseModel):
@@ -68,9 +77,12 @@ class PaperUploadResponse(BaseModel):
 # ─── 健康检查 ──────────────────────────────────────────
 @app.get("/health")
 async def health():
+    minimax_ok = bool(MINIMAX_API_KEY and MINIMAX_GROUP_ID)
     return {
-        "status": "ok",
+        "status": "ok" if minimax_ok else "degraded",
         "phase": "phase0",
+        "model": "MiniMax",
+        "minimax_configured": minimax_ok,
         "timestamp": datetime.utcnow().isoformat(),
     }
 
@@ -82,15 +94,18 @@ async def register(email: str, password: str):
     for u in users_db.values():
         if u["email"] == email:
             raise HTTPException(400, "邮箱已注册")
+
     user_id = str(uuid.uuid4())
-    collection_name = f"user_{user_id}"
+    collection_name = f"user_{user_id.replace('-', '_')}"
+
     users_db[user_id] = {
         "email": email,
-        "password": password,  # Phase 0 明文存，生产要 hash
+        "password": password,  # Phase 0 明文，生产要 hash
         "plan": "free",
         "papers": [],
         "collection": collection_name,
     }
+
     return {"user_id": user_id, "collection": collection_name}
 
 
@@ -98,14 +113,25 @@ async def register(email: str, password: str):
 async def login(email: str, password: str):
     """Phase 0：简单登录，返回 JWT"""
     user = None
-    for u in users_db.values():
+    for uid, u in users_db.items():
         if u["email"] == email and u["password"] == password:
             user = u
             break
+
     if not user:
         raise HTTPException(401, "邮箱或密码错误")
-    token = create_access_token({"sub": user["email"], "user_id": list(users_db.keys())[list(users_db.values()).index(user)]})
-    return {"access_token": token, "token_type": "bearer"}
+
+    # 找到 user_id
+    user_id = next(uid for uid, u in users_db.items() if u["email"] == email)
+
+    token = create_access_token({"sub": email, "user_id": user_id})
+
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "collection": user["collection"],
+        "plan": user["plan"],
+    }
 
 
 def get_current_user(authorization: str = Header(None)):
@@ -118,11 +144,20 @@ def get_current_user(authorization: str = Header(None)):
             raise HTTPException(401, "无效的认证方式")
         payload = verify_token(token)
         email = payload["sub"]
-        for uid, u in users_db.items():
-            if u["email"] == email:
-                return uid, u
-        raise HTTPException(401, "用户不存在")
-    except Exception:
+        user_id = payload.get("user_id")
+
+        # 兼容旧 token（无 user_id）
+        if not user_id:
+            for uid, u in users_db.items():
+                if u["email"] == email:
+                    user_id = uid
+                    break
+
+        if user_id not in users_db:
+            raise HTTPException(401, "用户不存在")
+
+        return user_id, users_db[user_id]
+    except (ValueError, KeyError):
         raise HTTPException(401, "无效的 Token")
 
 
@@ -132,8 +167,11 @@ async def upload_paper(
     file: UploadFile = File(...),
     user_info: tuple = Depends(get_current_user),
 ):
-    """上传 PDF → 解析 → 向量化 → 存入 Qdrant"""
+    """上传 PDF → 解析 → 向量化 → 存入 ChromaDB"""
     user_id, user = user_info
+
+    if not MINIMAX_API_KEY or not MINIMAX_GROUP_ID:
+        raise HTTPException(503, "MiniMax API 未配置，请联系管理员")
 
     if not file.filename.endswith(".pdf"):
         raise HTTPException(400, "只支持 PDF 文件")
@@ -160,14 +198,13 @@ async def upload_paper(
     }
     user["papers"].append(paper_id)
 
-    # 后台处理（Phase 0 简单起见，这里同步处理）
+    # 同步处理（Phase 0 简单起见）
     # 生产环境要换 Celery 异步队列
     try:
         result = await process_pdf(
             pdf_path=str(tmp_path),
             paper_id=paper_id,
             collection_name=user["collection"],
-            openai_api_key=OPENAI_API_KEY,
         )
         papers_db[paper_id]["status"] = "ready"
         papers_db[paper_id]["chunks_count"] = result["chunks_count"]
@@ -175,7 +212,6 @@ async def upload_paper(
         papers_db[paper_id]["status"] = "error"
         raise HTTPException(500, f"索引失败: {str(e)}")
     finally:
-        # 清理临时文件
         tmp_path.unlink(missing_ok=True)
 
     return PaperUploadResponse(
@@ -190,11 +226,11 @@ async def upload_paper(
 async def list_papers(user_info: tuple = Depends(get_current_user)):
     """列出当前用户的论文"""
     _, user = user_info
-    result = []
-    for paper_id in user["papers"]:
-        if paper_id in papers_db:
-            result.append(papers_db[paper_id])
-    return result
+    return [
+        papers_db[pid]
+        for pid in user["papers"]
+        if pid in papers_db
+    ]
 
 
 # ─── RAG 问答 ──────────────────────────────────────────
@@ -203,20 +239,24 @@ async def chat(
     req: ChatRequest,
     user_info: tuple = Depends(get_current_user),
 ):
-    """语义检索 → 组装上下文 → LLM 生成答案"""
+    """语义检索 → 组装上下文 → MiniMax 生成答案"""
     user_id, user = user_info
 
-    # 检查配额
+    if not MINIMAX_API_KEY or not MINIMAX_GROUP_ID:
+        raise HTTPException(503, "MiniMax API 未配置")
+
+    # 免费用户不支持 RAG
     if user["plan"] == "free":
-        # Phase 0 简化：不做次数统计，直接拒绝 RAG
         raise HTTPException(403, "Free 用户不支持 RAG 问答，请升级到 Pro")
+
+    # collection 优先用请求参数，否则用用户的
+    collection = req.collection_name or user["collection"]
 
     # 检索相关 chunks
     chunks = await search_chunks(
         query=req.question,
-        collection_name=req.collection_name,
+        collection_name=collection,
         top_k=req.top_k,
-        openai_api_key=OPENAI_API_KEY,
     )
 
     if not chunks:
@@ -229,7 +269,6 @@ async def chat(
     answer_text, citations = await generate_answer(
         question=req.question,
         chunks=chunks,
-        anthropic_api_key=ANTHROPIC_API_KEY,
     )
 
     return ChatResponse(answer=answer_text, citations=citations)
@@ -243,6 +282,8 @@ async def my_quota(user_info: tuple = Depends(get_current_user)):
         "plan": user["plan"],
         "papers_used": len(user["papers"]),
         "papers_limit": 20 if user["plan"] == "free" else float("inf"),
+        "collection": user["collection"],
+        "minimax_configured": bool(MINIMAX_API_KEY and MINIMAX_GROUP_ID),
     }
 
 
