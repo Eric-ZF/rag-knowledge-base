@@ -360,7 +360,8 @@
   let uploading = false;
 
   /* ── API 基础 ──────────────────────────────────────────── */
-  const API = 'http://localhost:8000';
+  // Phase 0: 通过 tunnel 访问 API
+  const API = 'https://tough-rat-31.loca.lt';
 
   async function api(method, path, body, noAuth) {
     const headers = { 'Content-Type': 'application/json' };
@@ -369,7 +370,13 @@
     if (body) opts.body = JSON.stringify(body);
     const r = await fetch(API + path, opts);
     const data = await r.json();
-    if (!r.ok) throw new Error(data.detail || `HTTP ${r.status}`);
+    if (!r.ok) {
+        const data = await r.json().catch(() => ({}));
+        const msg = Array.isArray(data.detail)
+          ? data.detail.map((e: any) => e.msg || JSON.stringify(e)).join(', ')
+          : (data.detail || `HTTP ${r.status}`);
+        throw new Error(msg);
+    }
     return data;
   }
 
@@ -427,9 +434,15 @@
   };
 
   // 启动时检查 token
-  if (token) {
+  // Phase 0 Demo: 预填测试账号 token
+const DEMO_TOKEN = localStorage.getItem('token') || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJib3NzdGVzdEBib3NzLmlvIiwidXNlcl9pZCI6IjFkMmE0ZGMzLTU1MGYtNGY4OS1iOTdiLTJiMDU3NzA1MzgxYyIsImV4cCI6MTc3NDg4Nzk1OH0.iJQEdfD8FKdt5CKe5M9okco-d2RZmTqlhtW5RszR_1I';
+if (DEMO_TOKEN && DEMO_TOKEN !== '') {
+    token = DEMO_TOKEN;
+    userEmail = 'bosstest@boss.io';
+    userId = '';
+    localStorage.setItem('token', DEMO_TOKEN);
     showApp();
-  }
+}
 
   /* ── 文件上传 ──────────────────────────────────────────── */
   const uploadZone = document.getElementById('upload-zone');

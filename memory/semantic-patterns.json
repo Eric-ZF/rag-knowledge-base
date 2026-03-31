@@ -1,0 +1,112 @@
+{
+  "patterns": {
+    "pat-2026-03-31-001": {
+      "id": "pat-2026-03-31-001",
+      "name": "RAG 质量必须系统性排查",
+      "source": "rag-knowledge-base-investigation",
+      "confidence": 0.95,
+      "applications": 1,
+      "created": "2026-03-31",
+      "category": "llm_rag_debugging",
+      "pattern": "RAG 质量差必须分层排查：检索层(Chunk大小/Embedding模型/HybridSearch) → 上下文构建 → 生成层(模型/Prompt)",
+      "problem": "RAG 问答返回无效回答时，不知道从哪里入手",
+      "solution": {
+        "p0_fix": ["chunk_size 800→2000", "top_k 5→8", "添加 Hybrid Search(向量+BM25)"],
+        "p1_fix": ["Embedding模型切换为学术导向", "PDF解析策略hi_res", "强化System Prompt强制引用"]
+      },
+      "quality_rules": [
+        "chunk_size ≥ 1500字（学术论文）",
+        "top_k ≥ 8（候选翻倍）",
+        "必须用 Hybrid Search（术语精确匹配权重40%）",
+        "System Prompt 必须强制【片段X】标注格式"
+      ],
+      "target_skills": ["gstack:investigate", "rag-knowledge-base"]
+    },
+    "pat-2026-03-31-002": {
+      "id": "pat-2026-03-31-002",
+      "name": "ChromaDB 向量维度切换必须重建索引",
+      "source": "rag-knowledge-base-investigation",
+      "confidence": 0.98,
+      "applications": 1,
+      "created": "2026-03-31",
+      "category": "vector_db_migration",
+      "pattern": "切换 Embedding 模型时，新旧模型向量维度必须相同，否则 ChromaDB 检索报错",
+      "problem": "text2vec(768维)→embo-01(1024维) 切换后 ChromaDB 报维度不匹配错误",
+      "solution": {
+        "短期": "继续用 text2vec-base-chinese，不切换",
+        "长期": "如需切换到 eambo-01，必须：(1)删除旧 collection (2)重新上传并索引所有 PDF"
+      },
+      "quality_rules": [
+        "切换 Embedding 前必须检查维度是否一致",
+        "不同维度索引不能共用同一 collection"
+      ],
+      "target_skills": ["rag-knowledge-base", "gstack:investigate"]
+    },
+    "pat-2026-03-31-003": {
+      "id": "pat-2026-03-31-003",
+      "name": "localtunnel 免费版进程会被云平台 SIGTERM 杀死",
+      "source": "direct_observation",
+      "confidence": 0.95,
+      "applications": 3,
+      "created": "2026-03-31",
+      "category": "infrastructure_stability",
+      "pattern": "localtunnel 进程在腾讯云等平台上会被定时 SIGTERM 杀死，且 URL 每次启动都会变化，不适合生产",
+      "problem": "localtunnel 隧道频繁断开，Failed to fetch 错误",
+      "solution": {
+        "方案A_生产": "直接用云服务器公网IP + 安全组开放端口（推荐）",
+        "方案B_快速验证": "ngrok 替代 localtunnel（更稳定）",
+        "方案C_临时": "用 systemd 保活 localtunnel 进程（但 URL 仍会变化）"
+      },
+      "quality_rules": [
+        "不要依赖 localtunnel 作为生产环境隧道",
+        "demo.html 中的 API URL 必须与实际隧道匹配（URL 每次变）",
+        "腾讯云服务器公网 IP: 124.156.204.163"
+      ],
+      "target_skills": ["rag-knowledge-base", "infrastructure"]
+    },
+    "pat-2026-03-31-004": {
+      "id": "pat-2026-03-31-004",
+      "name": "内存型数据库重启后数据丢失必须预填充",
+      "source": "rag-knowledge-base-investigation",
+      "confidence": 0.97,
+      "applications": 1,
+      "created": "2026-03-31",
+      "category": "backend_architecture",
+      "pattern": "FastAPI 内存中的 users_db/papers_db 在进程重启后清空，需要 startup 脚本预填充旧数据恢复服务",
+      "problem": "backend 重启后用户论文列表为空，已有的 ChromaDB 索引无法访问",
+      "solution": {
+        "方案A_长期": "将 users_db/papers_db 持久化到 SQLite/PostgreSQL",
+        "方案B_快速恢复": "用 startup 脚本注入旧用户和论文数据",
+        "当前使用": "/tmp/start_backend.py 预填充脚本"
+      },
+      "quality_rules": [
+        "内存型数据库必须有持久化方案",
+        "重启后必须能自动恢复旧数据",
+        "ChromaDB collection 名与用户ID绑定，重启后用户名变了会导致 collection 找不到"
+      ],
+      "target_skills": ["rag-knowledge-base", "gstack:plan-eng"]
+    },
+    "pat-2026-03-31-005": {
+      "id": "pat-2026-03-31-005",
+      "name": "MiniMax API 两套端点必须区分清楚",
+      "source": "direct_testing",
+      "confidence": 0.95,
+      "applications": 2,
+      "created": "2026-03-31",
+      "category": "api_configuration",
+      "pattern": "MiniMax 有两套 API：api.minimax.chat（需GroupId header）和 api.minimax.io（OpenAI兼容格式），M2.7 在 minimax.chat 上可用",
+      "problem": "混用端点导致 401/404 错误",
+      "solution": {
+        "chat_endpoint": "https://api.minimax.chat/v1/chat/completions",
+        "auth_header": "Authorization: Bearer {api_key}",
+        "required_header": "GroupId: {group_id}",
+        "model": "MiniMax-M2.7（推荐）或 MiniMax-Text-01"
+      },
+      "quality_rules": [
+        "API endpoint 不能想当然，要实测验证",
+        "两套端点分别测试，确认哪个返回 200"
+      ],
+      "target_skills": ["rag-knowledge-base", "gstack:investigate"]
+    }
+  }
+}

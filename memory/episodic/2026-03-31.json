@@ -1,0 +1,129 @@
+{
+  "id": "ep-2026-03-31-001",
+  "date": "2026-03-31",
+  "session": "RAG 学术知识库 Phase 0 调试与修复",
+  "situation": "boss 反馈 Demo 已测试可跑通，但 RAG 问答质量严重不足，给不出有效信息",
+  "experiences": [
+    {
+      "skill_used": "gstack:investigate",
+      "task": "系统性排查 RAG 问答质量差的原因",
+      "outcome": "success",
+      "root_cause": [
+        "chunk_size=800 太小切断语义",
+        "纯向量检索无关键词匹配",
+        "top_k=3 候选太少",
+        "System Prompt 未强制引用格式"
+      ],
+      "actions_taken": [
+        "用 agent-browser 抓取 demo 页面截图",
+        "直接 curl 调用 API 验证后端链路",
+        "代码审查 pipeline.py + chat.py",
+        "确认 MiniMax API 520 是服务端问题非代码问题",
+        "确认 M2.7 模型在 api.minimax.chat 上可用"
+      ],
+      "patterns_discovered": [
+        "pat-2026-03-31-001 (RAG质量必须分层排查)",
+        "pat-2026-03-31-005 (MiniMax API两套端点)"
+      ]
+    },
+    {
+      "skill_used": "code_modification",
+      "task": "按 P0 优先级修复 RAG 质量问题",
+      "outcome": "success_with_issues",
+      "root_cause_of_issues": [
+        "pipeline.py 硬编码了 shibing624/text2vec 而非从 .env 读取",
+        "config.py 中误将 chat endpoint 改为 api.minimax.io（正确是 minimax.chat）",
+        "ChromaDB 向量维度 768→1024 会导致索引不兼容，必须回退",
+        "BM25 库未安装，hybrid_search 降级路径有 KeyError"
+      ],
+      "actions_taken": [
+        "chunk_size 800→2000, overlap 80→200",
+        "top_k 5→8",
+        "新增 hybrid_search 函数（向量+BM25融合排序）",
+        "修复降级路径 combined_score KeyError",
+        "确认 M2.7 可用后回退 Embedding 模型切换（保持 text2vec）",
+        "更新 config.py CHAT_MODEL=MiniMax-M2.7",
+        "更新 chat.py System Prompt 强化引用要求"
+      ],
+      "patterns_discovered": [
+        "pat-2026-03-31-002 (ChromaDB维度切换陷阱)"
+      ]
+    },
+    {
+      "skill_used": "infrastructure_fix",
+      "task": "解决 localtunnel 不稳定导致的 Failed to fetch",
+      "outcome": "partial",
+      "root_cause": [
+        "localtunnel 进程被腾讯云 SIGTERM 杀死",
+        "进程死亡后 tunnel URL 变化",
+        "demo.html 中硬编码的 API URL 过期",
+        "腾讯云安全组未开放 80/8000/8080 端口"
+      ],
+      "actions_taken": [
+        "安装 nginx 配置反向代理（端口 80）",
+        "尝试用公网 IP 124.156.204.163 直接访问",
+        "发现安全组封锁，无法直接 IP 访问",
+        "多次重启 localtunnel 进程",
+        "更新 demo.html API URL 指向新 tunnel URL",
+        "改为直连 124.156.204.163:8000（等待 boss 开安全组）"
+      ],
+      "patterns_discovered": [
+        "pat-2026-03-31-003 (localtunnel进程稳定性)",
+        "pat-2026-03-31-004 (内存数据库重启数据丢失)"
+      ]
+    },
+    {
+      "skill_used": "data_recovery",
+      "task": "恢复 backend 重启后丢失的用户和论文数据",
+      "outcome": "success",
+      "root_cause": [
+        "users_db 和 papers_db 是内存字典",
+        "重启后数据清空，但 ChromaDB 索引还在",
+        "旧 collection: user_1d2a4dc3_550f_4f89_b97b_2b057705381c",
+        "旧论文: d03a2761-42af-4833-b49c-94c439b5e14a (542chunks), 23a1b6b8-ad5e-4d70-877c-1b3711d7baea (37chunks)"
+      ],
+      "actions_taken": [
+        "确认 ChromaDB 数据完好（在 /tmp/chromadb/）",
+        "创建 /tmp/start_backend.py 预填充脚本",
+        "注入旧用户 bosstest@boss.io + 论文元数据",
+        "验证登录、论文列表、RAG 问答全部恢复正常"
+      ],
+      "patterns_discovered": [
+        "pat-2026-03-31-004 (内存数据库必须预填充)"
+      ]
+    }
+  ],
+  "key_decisions": [
+    {
+      "decision": "不切换 Embedding 模型到 eambo-01（1024维），保持 text2vec-base-chinese（768维）",
+      "reason": "切换会导致现有 ChromaDB 索引不兼容，需要重建所有论文索引",
+      "alternative_considered": "切换到 eambo-01 并重建索引",
+      "decision_date": "2026-03-31"
+    },
+    {
+      "decision": "使用 /tmp/start_backend.py 作为快速恢复方案，不做完整持久化",
+      "reason": "Phase 0 验证阶段不需要完整的数据库持久化",
+      "alternative_considered": "迁移到 SQLite 持久化",
+      "decision_date": "2026-03-31"
+    },
+    {
+      "decision": "放弃 localtunnel，改用公网 IP 直连",
+      "reason": "localtunnel 进程被频繁杀死，URL 每次变化，不稳定",
+      "alternative_considered": "ngrok 替代",
+      "decision_date": "2026-03-31"
+    }
+  ],
+  "lessons": [
+    "代码中的硬编码值（chunk_size=800）比环境变量优先级还高，.env 里的 EMBEDDING_MODEL 被完全忽略",
+    "MiniMax API 错误 520/529 是服务端过载，重试往往能成功",
+    "localtunnel 的进程保活必须用 systemd 或 supervisor，nohup 不够",
+    "hybrid_search 降级路径必须测试完整，不能只测主路径",
+    "demo.html 中的 API URL 变了之后前端页面不会自动更新，需要手动改"
+  ],
+  "boss_notes": [
+    "公网 IP: 124.156.204.163（腾讯云服务器）",
+    "登录: bosstest@boss.io / BossPhase0",
+    "当前 demo URL（localtunnel，可能已变）: pretty-corners-wear.loca.lt",
+    "boss 偏好：直接给结论，不要过多询问"
+  ]
+}
