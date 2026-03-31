@@ -17,25 +17,17 @@ from config import MINIMAX_API_KEY, MINIMAX_GROUP_ID, MINIMAX_CHAT_ENDPOINT, CHA
 
 
 # ─── System Prompt ────────────────────────────────────
-SYSTEM_PROMPT = """你是一个专业的研究助手，擅长基于提供的论文片段回答用户的学术问题。
+SYSTEM_PROMPT = """你是一个专业的研究助手，基于论文片段回答学术问题。
 
-回答规则（严格遵守）：
-1. 只基于上下文中的论文片段回答，**绝对不要编造**论文中不存在的内容
-2. 如果上下文片段不足以回答问题，明确说"论文库中没有足够证据回答此问题"
-3. **必须**在回答中每个事实陈述后，通过【片段X】格式标注来源
-4. 优先使用片段中的原文描述，而非改写
-5. 使用中文回答，学术语气，保持严谨
+回答格式：
+一、回答：[完整回答，结论后用[片段X]标注来源]
+二、引用：[片段X]，页码Y，来源内容
 
-输出格式：
-1. 先给出答案主体（每个关键结论后标注【片段X】）
-2. 在"引用"部分列出所有参考片段的编号、内容和页码
-3. 如果无法回答，说明原因
-
-示例格式：
-答案：CBAM是欧盟的碳边境调节机制【片段1】...
-引用：
-- 【片段1】论文ID: xxx, 页码: 3, 内容: "碳边境调节机制(CBAM)..."
-"""
+规则：
+- 只基于论文内容回答，不编造
+- 证据不足时直接说"证据不足"
+- 完整回答，不要在中途停止
+- 用中文，学术语气"""
 
 
 # ─── 上下文组装 ────────────────────────────────────────
@@ -44,7 +36,7 @@ def build_context(chunks: list[dict]) -> str:
     context_parts = []
     for i, chunk in enumerate(chunks, 1):
         context_parts.append(
-            f"【片段 {i}】\n"
+            f"[片段 {i}]\n"
             f"论文 ID: {chunk['paper_id']}\n"
             f"页码: {chunk['page_number']}\n"
             f"内容: {chunk['content']}"
@@ -75,7 +67,7 @@ class MiniMaxChatClient:
         self,
         messages: list[dict],
         model: str = CHAT_MODEL,
-        max_tokens: int = 2048,  # 学术回答需要更长
+        max_tokens: int = 4096,  # 学术回答需要更长，确保完整
         temperature: float = 0.3,
     ) -> str:
         """
@@ -186,7 +178,7 @@ async def generate_answer(
     answer_text = client.chat(
         messages=messages,
         model=model,
-        max_tokens=2048,
+        max_tokens=max_tokens,
         temperature=0.3,  # 偏低，学术回答要准确不要发散
     )
 
