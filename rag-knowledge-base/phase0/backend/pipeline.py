@@ -168,55 +168,95 @@ async def process_pdf(
     return {"chunks_count": len(chunks)}
 
 
-# ─── Hybrid Search（向量 + 关键词）────────────────────
+# ─── Hybrid Search（关键词预筛 + 向量重排）─────────────
 def hybrid_search(vectorstore, query: str, query_embedding_fn, k: int = 10) -> list[dict]:
     """
-    混合检索：向量相似度 + BM25 关键词匹配，融合排序
+    混合检索策略（不依赖 rank_bm25）：
 
-    学术问答中，专业术语（CBAM、碳边境调节机制）精确匹配比语义相似更重要，
-    因此关键词权重设为 0.4，向量权重 0.6
+    Step 1: 提取查询关键词（保留完整词，因为中文专业术语不能随意分割）
+    Step 2: 批量获取 ChromaDB 中的 chunks，过滤包含关键词的候选
+    Step 3: 对候选做向量相似度排序
+    Step 4: 融合关键词命中分（命中权重 40%）和向量分（60%）
+
+    学术问答中，专业术语（CBAM、碳边境调节机制）必须精确匹配，
+    纯向量语义相似度不足以捕捉术语相关性
     """
-    try:
-        import rank_bm25
-    except ImportError:
-        # BM25 不可用时降级为纯向量
-        results = vectorstore.similarity_search(query, k=k)
-        return [{"doc": r, "vector_score": 1.0, "bm25_score": 0.0} for r in results]
+    # Step 1: 提取关键词（中文 + 英文缩写，对学术术语尤其重要）
+    import re
+    # 中文词（至少2个汉字）
+    chinese_words = re.findall(r'[\u4e00-\u9fff]{2,}', query)
+    # 英文词（至少2个字母，用于 CBAM 等英文术语）
+    english_words = re.findall(r'[a-zA-Z]{2,}', query)
+    # 合并，中文优先，英文作为独立关键词
+    keywords = chinese_words + english_words
+    # 去重
+    seen = set()
+    keywords = [w for w in keywords if not (w in seen or seen.add(w))]
+    # 保留原始查询（不区分大小写，用于精确匹配）
+    query_lower = query.lower()
 
-    # 1. 向量检索
+    # Step 2: 获取足够多的 chunks 进行关键词过滤
+    # 先获取 k*4 个候选（保证关键词过滤后仍有足够候选）
     query_vec = query_embedding_fn.embed_query(query)
-    vector_results = vectorstore.similarity_search_by_vector(query_vec, k=k)
+    vector_candidates = vectorstore.similarity_search_by_vector(query_vec, k=k * 4)
 
-    # 2. BM25 关键词检索（从 vector 结果的文本中构建）
-    all_texts = [r.page_content for r in vector_results]
-    if not all_texts:
+    if not vector_candidates:
         return []
 
-    # 分词（简单按字符划分，中文效果尚可）
-    tokenized_corpus = [list(text) for text in all_texts]
-    bm25 = rank_bm25.BM25Okapi(tokenized_corpus)
-    query_tokens = list(query)
-    bm25_scores = bm25.get_scores(query_tokens)
+    # Step 3: 关键词命中检测（支持全角/半角归一化）
+    def to_halfwidth(text: str) -> str:
+        """全角→半角归一化（用于关键词匹配）"""
+        result = []
+        for ch in text:
+            code = ord(ch)
+            # 全角英文区：0xFF01-0xFF5E → 转为 0x21-0x7E
+            if 0xFF01 <= code <= 0xFF5E:
+                result.append(chr(code - 0xFEE0))
+            elif code == 0x3000:  # 全角空格
+                result.append(' ')
+            else:
+                result.append(ch)
+        return ''.join(result)
 
-    # 3. 融合排序
-    max_vector = max(r.metadata.get("_score", 1.0) for r in vector_results) or 1.0
-    max_bm25 = max(bm25_scores) or 1.0
+    for r in vector_candidates:
+        content = r.page_content
+        content_lower = to_halfwidth(content).lower()
+        # 统计命中了多少个关键词（全角/半角不敏感）
+        keyword_hits = sum(1 for kw in keywords if to_halfwidth(kw).lower() in content_lower)
+        r.metadata['_keyword_hits'] = keyword_hits
+        # 额外：检查是否包含完整查询词（全角/半角不敏感）
+        full_hit = 1 if to_halfwidth(query_lower) in content_lower else 0
+        r.metadata['_full_hit'] = full_hit
+
+    # Step 4: 向量分数归一化
+    max_score = max(r.metadata.get('_score', 1.0) for r in vector_candidates) or 1.0
+    max_kw = max(r.metadata.get('_keyword_hits', 0) for r in vector_candidates) or 1
 
     fused = []
-    for i, r in enumerate(vector_results):
-        vector_score = r.metadata.get("_score", max_vector * 0.5) / max_vector
-        bm25_norm = bm25_scores[i] / max_bm25 if max_bm25 > 0 else 0
-        # 融合：向量 60% + BM25 40%（学术术语精确匹配占重要地位）
-        combined_score = 0.6 * vector_score + 0.4 * bm25_norm
+    for r in vector_candidates:
+        vector_score = r.metadata.get('_score', max_score * 0.5) / max_score
+        kw_hits = r.metadata.get('_keyword_hits', 0)
+        kw_score = kw_hits / max_kw  # 归一化关键词分
+        full_hit = r.metadata.get('_full_hit', 0)
+
+        # 融合：向量 60% + 关键词 40%（学术术语必须精确匹配）
+        combined = 0.6 * vector_score + 0.4 * kw_score
+
+        # 如果完整查询命中，直接加分（术语精确匹配最重要）
+        if full_hit:
+            combined = combined * 1.3 + 0.2
+
         fused.append({
             "doc": r,
-            "combined_score": combined_score,
-            "vector_score": vector_score,
-            "bm25_score": bm25_norm,
+            "combined_score": round(combined, 4),
+            "vector_score": round(vector_score, 4),
+            "keyword_hits": kw_hits,
+            "full_hit": full_hit,
         })
 
+    # 按综合分数排序
     fused.sort(key=lambda x: x["combined_score"], reverse=True)
-    return fused
+    return fused[:k]
 
 
 # ─── 语义检索 ──────────────────────────────────────────

@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>RAG Phase 0 Demo</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'IBM Plex Sans', sans-serif; background: #faf9f7; color: #1a1a2e; padding: 24px; }
+  h1 { font-size: 20px; margin-bottom: 16px; }
+  .card { background: white; border: 1px solid #e8e6e3; border-radius: 12px; padding: 20px; margin-bottom: 16px; max-width: 600px; }
+  .status { font-size: 13px; color: #5c5c7a; margin-bottom: 12px; }
+  .status.ok { color: #3a6bc4; }
+  .status.err { color: #c44b3a; }
+  button { background: #c44b3a; color: white; border: none; border-radius: 8px; padding: 10px 20px; font-size: 14px; cursor: pointer; margin-right: 8px; margin-top: 8px; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  textarea { width: 100%; border: 1px solid #e8e6e3; border-radius: 8px; padding: 10px; font-size: 14px; font-family: inherit; resize: vertical; min-height: 60px; }
+  .log { background: #f5f4f2; border-radius: 8px; padding: 12px; font-size: 12px; font-family: monospace; max-height: 300px; overflow-y: auto; margin-top: 12px; white-space: pre-wrap; }
+  .log .ok { color: #3a6bc4; }
+  .log .err { color: #c44b3a; }
+  .log .info { color: #5c5c7a; }
+  .qa { background: white; border-radius: 8px; padding: 12px; margin: 8px 0; }
+  .qa .q { font-weight: 600; color: #c44b3a; }
+  .qa .a { margin-top: 6px; color: #2d2d44; line-height: 1.5; }
+  .cite { display: inline-block; background: #f0eeeb; padding: 2px 6px; border-radius: 4px; font-size: 11px; margin: 2px 4px 2px 0; }
+  input[type="file"] { font-size: 13px; }
+  #quota { font-size: 13px; color: #5c5c7a; margin-bottom: 12px; }
+</style>
+</head>
+<body>
+
+<h1>📚 RAG 学术知识库 — Phase 0 Demo</h1>
+
+<div class="card">
+  <div id="quota">状态: 检查中...</div>
+  <button id="btnLogin" onclick="doLogin()">1. 登录</button>
+  <button id="btnUpload" disabled onclick="doUpload()">2. 上传 PDF</button>
+  <button id="btnChat" disabled onclick="doChat()">3. RAG 问答</button>
+</div>
+
+<div class="card" id="uploadCard" style="display:none">
+  <div id="uploadStatus" class="status">等待上传...</div>
+  <input type="file" id="fileInput" accept=".pdf">
+</div>
+
+<div class="card" id="chatCard" style="display:none">
+  <div id="chatStatus" class="status">准备就绪</div>
+  <textarea id="questionInput" placeholder="输入问题，如：这篇论文的核心贡献是什么？" rows="2">这篇论文的核心贡献是什么？</textarea>
+  <button onclick="doChat()">发送问答</button>
+  <div id="qaList"></div>
+</div>
+
+<div class="card">
+  <div class="status">操作日志</div>
+  <div class="log" id="log"></div>
+</div>
+
+<script>
+const API = 'http://124.156.204.163:8000';
+let token = '';
+let paperId = '';
+
+function log(msg, type='info') {
+  const el = document.getElementById('log');
+  const ts = new Date().toLocaleTimeString();
+  el.innerHTML += `<span class="${type}">[${ts}] ${msg}\n</span>`;
+  el.scrollTop = el.scrollHeight;
+}
+
+function api(method, path, body, noAuth) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (!noAuth) headers['Authorization'] = 'Bearer ' + token;
+  const opts = { method, headers };
+  if (body) opts.body = JSON.stringify(body);
+  return fetch(API + path, opts).then(r => r.json()).catch(e => ({ error: e.message }));
+}
+
+async function doLogin() {
+  const btn = document.getElementById('btnLogin');
+  btn.disabled = true;
+  btn.textContent = '登录中...';
+  log('正在登录 bosstest@boss.io...');
+
+  // 注册（如果已存在会失败，但没关系）
+  await api('POST', '/auth/register', { email: 'bosstest@boss.io', password: 'BossPhase0' }, true);
+  log('注册请求已发送');
+
+  // 登录
+  const r = await api('POST', '/auth/login', { email: 'bosstest@boss.io', password: 'BossPhase0' }, true);
+  log(JSON.stringify(r).substring(0, 100));
+
+  if (r.access_token) {
+    token = r.access_token;
+    log('✅ 登录成功，Token: ' + token.substring(0, 30) + '...', 'ok');
+    document.getElementById('btnUpload').disabled = false;
+    document.getElementById('uploadCard').style.display = 'block';
+    document.getElementById('chatCard').style.display = 'block';
+    document.getElementById('btnLogin').textContent = '✅ 已登录';
+
+    // 获取配额
+    const q = await api('GET', '/me/quota');
+    log('配额: ' + JSON.stringify(q));
+    document.getElementById('quota').innerHTML = `计划: <b>${q.plan}</b> | 论文: ${q.papers_used} / ${q.papers_limit === Infinity ? '∞' : q.papers_limit}`;
+  } else {
+    log('❌ 登录失败: ' + JSON.stringify(r), 'err');
+    btn.disabled = false;
+    btn.textContent = '登录';
+  }
+}
+
+async function doUpload() {
+  const input = document.getElementById('fileInput');
+  const file = input.files[0];
+  if (!file) { alert('请先选择 PDF 文件'); return; }
+  const btn = document.getElementById('btnUpload');
+  btn.disabled = true;
+  btn.textContent = '上传中...';
+  log('开始上传: ' + file.name);
+
+  const formData = new FormData();
+  formData.append('file', file);
+
+  const r = await fetch(API + '/papers/upload', {
+    method: 'POST',
+    headers: { 'Authorization': 'Bearer ' + token },
+    body: formData,
+  }).then(r => r.json()).catch(e => ({ error: e.message }));
+
+  log('上传响应: ' + JSON.stringify(r).substring(0, 200));
+
+  if (r.paper_id) {
+    paperId = r.paper_id;
+    log('✅ 上传成功，paper_id: ' + paperId, 'ok');
+    document.getElementById('uploadStatus').textContent = '⏳ 索引中，请等待约 90 秒...';
+    pollStatus();
+  } else {
+    log('❌ 上传失败: ' + JSON.stringify(r), 'err');
+    btn.disabled = false;
+    btn.textContent = '上传 PDF';
+  }
+}
+
+async function pollStatus() {
+  for (let i = 0; i < 40; i++) {
+    await new Promise(r => setTimeout(r, 5000));
+    const s = await fetch(API + '/papers/' + paperId + '/status', {
+      headers: { 'Authorization': 'Bearer ' + token }
+    }).then(r => r.json()).catch(() => ({ status: 'error' }));
+
+    document.getElementById('uploadStatus').textContent = `[${(i+1)*5}s] status=${s.status}`;
+    log(`[${(i+1)*5}s] 状态: ${s.status}${s.chunks_count ? ', chunks=' + s.chunks_count : ''}`);
+
+    if (s.status === 'ready') {
+      document.getElementById('uploadStatus').textContent = '✅ 索引完成！可以开始聊天了';
+      document.getElementById('uploadStatus').className = 'status ok';
+      document.getElementById('btnChat').disabled = false;
+      log('✅ 索引完成！' + s.chunks_count + ' chunks', 'ok');
+      return;
+    } else if (s.status === 'error') {
+      document.getElementById('uploadStatus').textContent = '❌ 索引失败';
+      document.getElementById('uploadStatus').className = 'status err';
+      log('❌ 索引失败: ' + JSON.stringify(s), 'err');
+      document.getElementById('btnUpload').disabled = false;
+      document.getElementById('btnUpload').textContent = '重新上传';
+      return;
+    }
+  }
+  log('⚠️ 轮询超时', 'err');
+}
+
+async function doChat() {
+  const q = document.getElementById('questionInput').value.trim();
+  if (!q) return;
+  if (!paperId) { alert('请先上传并等待索引完成'); return; }
+
+  const btn = document.getElementById('btnChat');
+  btn.disabled = true;
+  log('发送问题: ' + q);
+  document.getElementById('chatStatus').textContent = '⏳ 生成答案中...';
+
+  const r = await api('POST', '/chat', { question: q, top_k: 3 });
+  log('响应: ' + JSON.stringify(r).substring(0, 300));
+
+  if (r.answer) {
+    const qaList = document.getElementById('qaList');
+    const div = document.createElement('div');
+    div.className = 'qa';
+    let cites = '';
+    if (r.citations && r.citations.length) {
+      cites = '<div style="margin-top:8px">' + r.citations.map(c =>
+        `<span class="cite">页${c.page_number}</span>`
+      ).join('') + '</div>';
+    }
+    div.innerHTML = `<div class="q">Q: ${q}</div><div class="a">${r.answer.substring(0, 500)}${cites}</div>`;
+    qaList.prepend(div);
+    document.getElementById('chatStatus').textContent = '✅ 回答完成';
+    document.getElementById('chatStatus').className = 'status ok';
+  } else {
+    document.getElementById('chatStatus').textContent = '❌ 失败: ' + JSON.stringify(r).substring(0, 100);
+    document.getElementById('chatStatus').className = 'status err';
+  }
+  btn.disabled = false;
+}
+
+// 页面加载后自动登录
+window.onload = () => { doLogin(); };
+</script>
+</body>
+</html>

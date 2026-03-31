@@ -107,6 +107,49 @@
         "两套端点分别测试，确认哪个返回 200"
       ],
       "target_skills": ["rag-knowledge-base", "gstack:investigate"]
+    },
+    "pat-2026-03-31-006": {
+      "id": "pat-2026-03-31-006",
+      "name": "中文PDF全文索引中全角/半角字符必须归一化",
+      "source": "rag-knowledge-base-investigation",
+      "confidence": 0.98,
+      "applications": 2,
+      "created": "2026-03-31",
+      "category": "chinese_text_processing",
+      "pattern": "PDF解析后的中文文本使用全角字符（如ＣＢＡＭ，Unicode 0xFF21-0xFF5E），用户查询使用半角字符（如CBAM）。Python 'in' 运算符不做全角/半角归一化，导致关键词匹配完全失效",
+      "problem": "CBAM 查询返回无关内容，因为论文中的 'ＣＢＡＭ'（全角）永远匹配不到查询的 'CBAM'（半角）",
+      "solution": {
+        "短期": "在关键词匹配前对双方做全角→半角归一化（ord - 0xFEE0）",
+        "长期": "在 PDF 解析阶段或索引写入前统一做归一化，避免存储全角字符"
+      },
+      "quality_rules": [
+        "中文文本关键词匹配必须做全角/半角归一化",
+        "PDF 解析后应统一转为半角（ASCII range 0x21-0x7E）",
+        "to_halfwidth(): ord 0xFF01-0xFF5E → ord-0xFEE0，全角空格→普通空格"
+      ],
+      "target_skills": ["rag-knowledge-base", "chinese-nlp", "gstack:investigate"]
+    },
+    "pat-2026-03-31-007": {
+      "id": "pat-2026-03-31-007",
+      "name": "PDF重复上传产生垃圾paper_id污染向量库",
+      "source": "rag-knowledge-base-investigation",
+      "confidence": 0.97,
+      "applications": 1,
+      "created": "2026-03-31",
+      "category": "data_quality",
+      "pattern": "同一篇PDF被重复上传时，ChromaDB中会产生两个不同的paper_id但内容完全相同的chunks，导致检索结果重复且浪费空间",
+      "problem": "679998da-d8dd-4ea2-9c40-f83bb0784c04 是 d03a2761 的完全重复，542个chunks垃圾数据",
+      "solution": {
+        "检测": "对同一collection中内容完全相同的不同paper_id进行去重",
+        "预防": "上传前对PDF内容做hash，相同hash拒绝重复上传",
+        "清理": "DELETE FROM collection WHERE paper_id='679998da-d8dd-4ea2-9c40-f83bb0784c04'"
+      },
+      "quality_rules": [
+        "PDF上传前做内容hash，检测重复",
+        "定期检查collection中是否有paper_id数量异常（内容重复）",
+        "ChromaDB where filter 可按 paper_id 删除特定 chunks"
+      ],
+      "target_skills": ["rag-knowledge-base", "data-pipeline"]
     }
   }
 }

@@ -114,6 +114,13 @@
     }
   ],
   "lessons": [
+    "全角/半角归一化是最关键的bug：PDF中的'ＣＢＡＭ'无法匹配查询'CBAM'，必须在匹配前做归一化",
+    "中文PDF解析后大量使用全角字符（0xFF21-0xFF5E），不是标准ASCII",
+    "text2vec-base-chinese 对专业学术术语（CBAM）语义映射很差，向量距离1.15几乎是噪声",
+    "关键词精确匹配（Fullwidth→Halfwidth归一化）比向量语义匹配更可靠",
+    "同一PDF重复上传会产生不同paper_id的重复chunks，危害检索质量",
+    "腾讯云安全组是让服务直接暴露公网的最简方案，比任何隧道都稳定"
+  ],
     "代码中的硬编码值（chunk_size=800）比环境变量优先级还高，.env 里的 EMBEDDING_MODEL 被完全忽略",
     "MiniMax API 错误 520/529 是服务端过载，重试往往能成功",
     "localtunnel 的进程保活必须用 systemd 或 supervisor，nohup 不够",
