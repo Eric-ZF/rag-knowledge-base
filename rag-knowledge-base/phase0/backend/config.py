@@ -51,7 +51,8 @@ EMBEDDING_MODEL = "BAAI/bge-large-zh-v1.5"
 EMBEDDING_DIM = 1024
 
 # ─── ChromaDB ─────────────────────────────────────────
-CHROMADB_DIR = os.getenv("CHROMADB_DIR", "/tmp/chromadb")
+# 放在 /root/.openclaw/rag-data/chromadb，持久化不丢数据
+CHROMADB_DIR = os.getenv("CHROMADB_DIR", "/root/.openclaw/rag-data/chromadb")
 
 # ─── 验证 ──────────────────────────────────────────────
 def validate_minimax_chat_config():

@@ -4,6 +4,7 @@ Phase 0 验证 Sprint — FastAPI 入口
 """
 
 import os
+import re
 import uuid
 import asyncio
 from datetime import datetime
@@ -32,7 +33,7 @@ except RuntimeError as e:
 # ─── FastAPI ─────────────────────────────────────────
 app = FastAPI(
     title="RAG 学术知识库 — Phase 0（MiniMax + 本地 Embedding）",
-    version="0.3.0",
+    version="0.4.0",
     debug=DEBUG,
 )
 
@@ -44,9 +45,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ─── 内存存储 ─────────────────────────────────────────
-users_db: dict = {}
-papers_db: dict = {}  # {paper_id: {user_id, title, status, chunks_count, collection, error}}
+# ─── 内存存储（Phase 0.5：email 做主键，O(1) 查找）────────
+# 结构：users_db[user_id] = {email, user_id, password, plan, papers, collection}
+users_db: dict = {}       # key = user_id (uuid)
+users_by_email: dict = {}  # key = email，O(1) 登录查找
+papers_db: dict = {}      # key = paper_id
 
 # ─── Pydantic 模型 ────────────────────────────────────
 class ChatRequest(BaseModel):
@@ -93,18 +96,21 @@ async def health():
 async def register(req: RegisterRequest):
     email = req.email
     password = req.password
-    for u in users_db.values():
-        if u["email"] == email:
-            raise HTTPException(400, "邮箱已注册")
+    # O(1) 查找：email 已注册则直接拒绝
+    if email in users_by_email:
+        raise HTTPException(400, "邮箱已注册")
     user_id = str(uuid.uuid4())
     collection_name = f"user_{user_id.replace('-', '_')}"
-    users_db[user_id] = {
+    user_record = {
         "email": email,
+        "user_id": user_id,
         "password": password,
         "plan": "free",
         "papers": [],
         "collection": collection_name,
     }
+    users_db[user_id] = user_record
+    users_by_email[email] = user_record
     return {"user_id": user_id, "collection": collection_name}
 
 
@@ -112,15 +118,11 @@ async def register(req: RegisterRequest):
 async def login(req: LoginRequest):
     email = req.email
     password = req.password
-    user = None
-    for uid, u in users_db.items():
-        if u["email"] == email and u["password"] == password:
-            user = u
-            break
-    if not user:
+    # O(1) 查找
+    user = users_by_email.get(email)
+    if not user or user["password"] != password:
         raise HTTPException(401, "邮箱或密码错误")
-    user_id = next(uid for uid, u in users_db.items() if u["email"] == email)
-    token = create_access_token({"sub": email, "user_id": user_id})
+    token = create_access_token({"sub": email, "user_id": user["user_id"]})
     return {
         "access_token": token,
         "token_type": "bearer",
@@ -140,10 +142,8 @@ def get_current_user(authorization: str = Header(None)):
         email = payload["sub"]
         user_id = payload.get("user_id")
         if not user_id:
-            for uid, u in users_db.items():
-                if u["email"] == email:
-                    user_id = uid
-                    break
+            raise HTTPException(401, "Token 中缺少 user_id")
+        # O(1) 查找，不再遍历
         if user_id not in users_db:
             raise HTTPException(401, "用户不存在")
         return user_id, users_db[user_id]
@@ -155,9 +155,14 @@ def get_current_user(authorization: str = Header(None)):
 def _process_pdf_background(paper_id: str, tmp_path: str, collection: str):
     """
     后台运行的 PDF 处理任务（在线程池中执行，不阻塞事件循环）
+
+    注意：process_pdf 是 async def，在线程池中调用 asyncio.run() 会有问题，
+    直接用 asyncio.run() 创建新事件循环即可，BackgroundTasks 本身已在线程中
     """
     try:
-        result = asyncio.run(process_pdf(
+        # 直接 asyncio.run()（在线程池线程中创建新事件循环）
+        import asyncio as _asyncio
+        result = _asyncio.run(process_pdf(
             pdf_path=tmp_path,
             paper_id=paper_id,
             collection_name=collection,
@@ -192,6 +197,12 @@ async def upload_paper(
     if not file.filename.endswith(".pdf"):
         raise HTTPException(400, "只支持 PDF 文件")
 
+    # 文件大小验证：限制 50MB
+    MAX_FILE_SIZE = 50 * 1024 * 1024
+    content = await file.read()
+    if len(content) > MAX_FILE_SIZE:
+        raise HTTPException(413, f"文件大小超过限制（最大 50MB），当前: {len(content)//1024//1024}MB")
+
     if user["plan"] == "free" and len(user["papers"]) >= 20:
         raise HTTPException(429, "免费用户论文上限 20 篇，请升级到 Pro")
 
@@ -200,8 +211,7 @@ async def upload_paper(
 
     tmp_path = f"/tmp/{paper_id}.pdf"
     with open(tmp_path, "wb") as f:
-        content = await file.read()
-        f.write(content)
+        f.write(content)  # content 已在上面读取过了
 
     papers_db[paper_id] = {
         "user_id": user_id,
@@ -248,6 +258,37 @@ async def list_papers(user_info: tuple = Depends(get_current_user)):
         for pid in user["papers"]
         if pid in papers_db
     ]
+
+
+@app.delete("/papers/{paper_id}")
+async def delete_paper(paper_id: str, user_info: tuple = Depends(get_current_user)):
+    """删除论文：清理 papers_db + ChromaDB 中的数据"""
+    _, user = user_info
+    if paper_id not in papers_db or papers_db[paper_id]["user_id"] != user_info[0]:
+        raise HTTPException(404, "论文不存在")
+    if papers_db[paper_id]["status"] == "processing":
+        raise HTTPException(409, "论文正在处理中，无法删除")
+
+    # 从 ChromaDB collection 中删除该 paper 的所有 chunks
+    try:
+        import chromadb
+        from config import CHROMADB_DIR
+        client = chromadb.PersistentClient(path=CHROMADB_DIR)
+        safe_name = re.sub(r"[^a-zA-Z0-9_]", "_", user["collection"])
+        col = client.get_collection(safe_name)
+        # 找出该 paper_id 的所有 chunk ids
+        results = col.get(where={"paper_id": paper_id})
+        if results["ids"]:
+            col.delete(ids=results["ids"])
+            print(f"[{paper_id}] 🗑️ 从 ChromaDB 删除 {len(results['ids'])} 个 chunks")
+    except Exception as e:
+        print(f"[{paper_id}] ⚠️ ChromaDB 清理失败: {e}")
+
+    # 从 papers_db 和用户列表中删除
+    user["papers"].remove(paper_id)
+    title = papers_db.pop(paper_id)["title"]
+    print(f"[{paper_id}] ✅ 论文已删除: {title}")
+    return {"ok": True, "paper_id": paper_id, "title": title}
 
 
 # ─── RAG 问答 ─────────────────────────────────────────
