@@ -75,7 +75,7 @@ class MiniMaxChatClient:
         self,
         messages: list[dict],
         model: str = CHAT_MODEL,
-        max_tokens: int = 1024,
+        max_tokens: int = 2048,  # 学术回答需要更长
         temperature: float = 0.3,
     ) -> str:
         """
@@ -127,6 +127,18 @@ class MiniMaxChatClient:
         return data["choices"][0]["message"]["content"]
 
 
+def strip_thinking_tags(text: str) -> str:
+    """去除 MiniMax-M2.7 思考过程标签，只保留最终回答"""
+    import re
+    # MiniMax 思考块 <｜Think｜＞...｜｜
+    text = re.sub(r'<｜Think｜＞[\s\S]*?｜｜', '', text)
+    # [思考]...[/思考]
+    text = re.sub(r'\[思考\][\s\S]*?\[/思考\]', '', text)
+    # <think>...</think> (Markdown)
+    text = re.sub(r'<think>[\s\S]*?</think>', '', text)
+    return text.strip()
+
+
 # ─── 生成答案 ──────────────────────────────────────────
 async def generate_answer(
     question: str,
@@ -174,9 +186,12 @@ async def generate_answer(
     answer_text = client.chat(
         messages=messages,
         model=model,
-        max_tokens=1024,
+        max_tokens=2048,
         temperature=0.3,  # 偏低，学术回答要准确不要发散
     )
+
+    # 去除思考过程标签
+    answer_text = strip_thinking_tags(answer_text)
 
     # 构建 citations
     citations = []

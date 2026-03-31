@@ -294,7 +294,7 @@ async def my_quota(user_info: tuple = Depends(get_current_user)):
     return {
         "plan": user["plan"],
         "papers_used": len(user["papers"]),
-        "papers_limit": 20 if user["plan"] == "free" else float("inf"),
+        "papers_limit": 20 if user["plan"] == "free" else None,  # None = 无上限
         "collection": user["collection"],
     }
 

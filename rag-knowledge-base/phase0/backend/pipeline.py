@@ -75,17 +75,22 @@ def get_chroma_embedding_fn():
 # ─── PDF 解析 ──────────────────────────────────────────
 def parse_pdf(pdf_path: str) -> list[Document]:
     """
-    使用 Unstructured 解析 PDF，保留公式/表格/段落结构
+    使用 pdfplumber 按页提取文本，保留段落自然结构
+    解决 UnstructuredLoader fast策略将每字符/每行当作独立element的问题
     """
-    from langchain_community.document_loaders import UnstructuredFileLoader
+    import pdfplumber
+    from langchain_core.documents import Document
 
-    loader = UnstructuredFileLoader(
-        pdf_path,
-        mode="elements",
-        strategy="fast",  # fast=低成本，hi_res=高精度(贵)
-    )
-    docs = loader.load()
-    return docs
+    all_docs = []
+    with pdfplumber.open(pdf_path) as pdf:
+        for page_num, page in enumerate(pdf.pages, start=1):
+            text = page.extract_text()
+            if text and text.strip():
+                all_docs.append(Document(
+                    page_content=text.strip(),
+                    metadata={"page_number": page_num}
+                ))
+    return all_docs
 
 
 # ─── 分块 ─────────────────────────────────────────────
@@ -239,10 +244,22 @@ def hybrid_search(vectorstore, query: str, query_embedding_fn, k: int = 10) -> l
         kw_score = kw_hits / max_kw  # 归一化关键词分
         full_hit = r.metadata.get('_full_hit', 0)
 
-        # 融合：向量 60% + 关键词 40%（学术术语必须精确匹配）
-        combined = 0.6 * vector_score + 0.4 * kw_score
+        # 融合：向量 50% + 关键词 30% + 页码位置 20%（学术论文前几页是摘要/引言，权重高）
+        combined = 0.5 * vector_score + 0.3 * kw_score
 
-        # 如果完整查询命中，直接加分（术语精确匹配最重要）
+        # 页码位置权重：前几页（摘要/引言/结论）加分，参考文献降权
+        page = r.metadata.get('page_number', 999)
+        if page <= 3:
+            page_bonus = 0.2  # 封面/摘要
+        elif page <= 10:
+            page_bonus = 0.1  # 引言/背景
+        elif page <= 25:
+            page_bonus = 0.0  # 正文
+        else:
+            page_bonus = -0.15  # 参考文献/附录降权
+        combined += page_bonus
+
+        # 如果完整查询命中，直接加分
         if full_hit:
             combined = combined * 1.3 + 0.2
 
@@ -252,6 +269,7 @@ def hybrid_search(vectorstore, query: str, query_embedding_fn, k: int = 10) -> l
             "vector_score": round(vector_score, 4),
             "keyword_hits": kw_hits,
             "full_hit": full_hit,
+            "page_bonus": round(page_bonus, 3),
         })
 
     # 按综合分数排序
@@ -263,7 +281,7 @@ def hybrid_search(vectorstore, query: str, query_embedding_fn, k: int = 10) -> l
 async def search_chunks(
     query: str,
     collection_name: str,
-    top_k: int = 8,  # 增大到 8，候选多了答案更完整
+    top_k: int = 10,  # 增大到 10，候选多了答案更完整
     openai_api_key: str = "",
     persist_directory: str = CHROMADB_DIR,
 ) -> list[dict]:
@@ -283,7 +301,7 @@ async def search_chunks(
     )
 
     # 检索 2 倍 top_k，再从中选最好的（Hybrid Search 重排）
-    hybrid_results = hybrid_search(vectorstore, query, embedding_fn, k=top_k * 2)
+    hybrid_results = hybrid_search(vectorstore, query, embedding_fn, k=top_k * 3)
 
     chunks = []
     for item in hybrid_results[:top_k]:

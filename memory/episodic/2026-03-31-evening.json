@@ -1,0 +1,71 @@
+{
+  "id": "ep-2026-03-31-002",
+  "date": "2026-03-31",
+  "session": "RAG 深度调试 - ChromaDB数据污染 / BGE模型切换 / 页码权重修复",
+  "key_lessons": [
+    {
+      "lesson": "ChromaDB delete_collection 不保证彻底删除——需要手动 verify",
+      "detail": "delete_collection 后立即查询，collection 仍存在；delete 不等于真正清理；必须重建新 collection 而不是删除旧",
+      "pattern_id": "pat-2026-03-31-004"
+    },
+    {
+      "lesson": "papers_db 和 users_db 是两个独立字典，必须同步更新",
+      "detail": "users_db['papers'] 和 papers_db 是分开管理的；只更新一个会导致数据不一致",
+      "pattern_id": "pat-2026-03-31-004"
+    },
+    {
+      "lesson": "pdfplumber chunks 远优于 UnstructuredLoader",
+      "detail": "UnstructuredLoader mode='elements' fast策略会把每字符当作element；pdfplumber按页提取正常，2000字/chunk，摘要/引言保留完整；这对中文PDF是重大改进",
+      "pattern_id": "pat-2026-03-31-008"
+    },
+    {
+      "lesson": "BGE-large-zh-v1.5 中文语义大幅优于 text2vec",
+      "detail": "text2vec-base-chinese 对CBAM这类专业术语向量距离高达1.15（几乎噪声）；BGE能正确把'双碳目标碳泄漏'匹配到摘要（score=0.45）",
+      "pattern_id": "pat-2026-03-31-008"
+    },
+    {
+      "lesson": "页码位置权重对学术论文检索极其重要",
+      "detail": "摘要/引言在前3页，参考文献在50页后；给前10页加bonus(0.1-0.2)，后面扣分(-0.15)；让摘要从综合0.3提升到0.45，排第一",
+      "pattern_id": "pat-2026-03-31-008"
+    },
+    {
+      "lesson": "top_k 太小会让检索被噪音主导",
+      "detail": "top_k=5时，参考文献页（57-60）占据了所有slot；增大到10+后，前10页摘要内容开始进入候选集",
+      "pattern_id": "pat-2026-03-31-008"
+    },
+    {
+      "lesson": "混合不同论文的chunks在同一collection会导致严重干扰",
+      "detail": "collection里有3篇不同论文（bd135ae6/1decd70d/6946d47d）；问CBAM时返回的是第3篇的参考文献；论文必须严格隔离",
+      "pattern_id": "pat-2026-03-31-007"
+    },
+    {
+      "lesson": "扫描版PDF无法被文字提取器解析",
+      "detail": "pdfplumber对扫描版PDF（图片文字）提取为空白；蒙逸雯论文有61页但只有109个chunks（大部分是参考文献页），正文几乎没有文字；这是PDF本身问题，不是代码问题",
+      "pattern_id": "pat-2026-03-31-009"
+    }
+  ],
+  "actions_taken": [
+    "切换Embedding: text2vec(768维) → BGE-large-zh-v1.5(1024维)",
+    "切换PDF解析: UnstructuredLoader → pdfplumber（按页提取）",
+    "增大chunk_size: 800 → 2000",
+    "增大top_k: 5 → 10",
+    "增加top_k候选: k*2 → k*3",
+    "实现Hybrid Search: 向量50% + 关键词30% + 页码位置20%",
+    "增加页码权重: 前3页+0.2, 4-10页+0.1, >25页-0.15",
+    "修复strip_thinking_tags: 加入re.DOTALL标志",
+    "增大max_tokens: 1024 → 2048",
+    "清理ChromaDB collection并重建（验证删除彻底）",
+    "清空papers_db，等待重新上传PDF"
+  ],
+  "current_state": {
+    "chroma_collection": "空的（已重建）",
+    "papers_db": "空的（已清空）",
+    "pending": "boss需重新上传CBAM论文PDF",
+    "demo_url": "http://124.156.204.163:8080/demo.html",
+    "backend_status": "运行中"
+  },
+  "boss_preferences_confirmed": [
+    "直接给结论，不询问",
+    "自我改进时不要打扰boss"
+  ]
+}

@@ -150,6 +150,72 @@
         "ChromaDB where filter 可按 paper_id 删除特定 chunks"
       ],
       "target_skills": ["rag-knowledge-base", "data-pipeline"]
+    },
+    "pat-2026-03-31-008": {
+      "id": "pat-2026-03-31-008",
+      "name": "学术论文RAG检索质量飞跃的核心组合技",
+      "source": "rag-knowledge-base-evening-session",
+      "confidence": 0.95,
+      "applications": 1,
+      "created": "2026-03-31",
+      "category": "rag_retrieval",
+      "pattern": "四个技术叠加让检索质量从垃圾到可用：(1)BGE-large-zh-v1.5替代text2vec (2)pdfplumber按页提取替代UnstructuredLoader (3)页码位置权重（前几页加分，后面扣分）(4)top_k>=10确保摘要进入候选",
+      "problem": "text2vec对CBAM术语向量距离1.15（噪声）；UnstructuredLoader每字符一个chunk；参考文献页占据top5；摘要/引言完全无法检索到",
+      "solution": {
+        "embedding": "BAAI/bge-large-zh-v1.5（1024维，中文学术语义）",
+        "parser": "pdfplumber按页提取（2000字/chunk，保留段落完整）",
+        "ranking": "向量50%+关键词30%+页码位置20%（摘要页bonus+0.2，参考文献-0.15）",
+        "候选数": "top_k>=10，hybrid_search候选k*3"
+      },
+      "quality_rules": [
+        "chunk_size >= 1500字（中文学术段落）",
+        "top_k >= 10（确保摘要进入候选）",
+        "必须对前10页加正向权重，对>25页（参考文献）加负向权重",
+        "Hybrid Search候选数 = top_k * 3"
+      ],
+      "target_skills": ["rag-knowledge-base", "gstack:investigate"]
+    },
+    "pat-2026-03-31-009": {
+      "id": "pat-2026-03-31-009",
+      "name": "ChromaDB collection delete不保证彻底——必须重建而非删除",
+      "source": "direct_observation",
+      "confidence": 0.92,
+      "applications": 2,
+      "created": "2026-03-31",
+      "category": "vector_db_operations",
+      "pattern": "ChromaDB delete_collection 后 collection 仍可能被保留（或删除不彻底）；正确做法是 delete 后立即重建新 collection，而不是依赖删除后的状态",
+      "problem": "删除了 collection 但重启后 chunks 仍然存在；必须清空重建才能保证干净",
+      "solution": {
+        "错误做法": "client.delete_collection(name); client.get_or_create_collection(name)",
+        "正确做法": "delete → 立即 create_collection（不要依赖 get_or_create）→ 重启验证"
+      },
+      "quality_rules": [
+        "删除 collection 后立即创建新的空 collection",
+        "重启后必须验证 chunks 数量为 0",
+        "不要相信 delete 后的状态是干净的"
+      ],
+      "target_skills": ["rag-knowledge-base", "gstack:investigate"]
+    },
+    "pat-2026-03-31-010": {
+      "id": "pat-2026-03-31-010",
+      "name": "pdfplumber中文PDF提取能力远优于UnstructuredLoader",
+      "source": "direct_comparison",
+      "confidence": 0.97,
+      "applications": 1,
+      "created": "2026-03-31",
+      "category": "pdf_processing",
+      "pattern": "UnstructuredLoader mode='elements' strategy='fast' 对中文PDF会产生每字符一个chunk的垃圾；pdfplumber按页提取，2000字/chunk，中文保留完整段落结构",
+      "problem": "UnstructuredLoader 把中文PDF每行/每字符当作一个 element，导致chunk大小3-50字符，完全无法用",
+      "solution": {
+        "短期": "pip install pdfplumber; 使用 pdfplumber.open(pdf_path).pages 按页提取",
+        "PDF格式": "pdfplumber 只提取文字（扫描图片无法识别）；表格/公式提取需 hi_res 策略"
+      },
+      "quality_rules": [
+        "中文PDF用 pdfplumber，不使用 UnstructuredLoader",
+        "PDF上传后先验证 chunk 数量和大小（平均>500字才算正常）",
+        "如果总 chunks < 20 且平均大小 < 100字，说明解析失败"
+      ],
+      "target_skills": ["rag-knowledge-base", "data-pipeline"]
     }
   }
 }

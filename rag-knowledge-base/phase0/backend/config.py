@@ -45,11 +45,10 @@ MINIMAX_CHAT_ENDPOINT = "https://api.minimax.chat/v1/chat/completions"
 CHAT_MODEL = "MiniMax-M2.7"
 
 # ─── 本地 Embedding 配置 ──────────────────────────────
-# Phase 0 使用本地模型，零 API 成本
-# 注意：embo-01 API 向量(1024维) 与 text2vec(768维) 维度不同
-# 如切换到 eambo-01，需重新索引所有论文
-EMBEDDING_MODEL = "shibing624/text2vec-base-chinese"
-EMBEDDING_DIM = 768
+# BGE-large-zh-v1.5: 1024维，中文语义和学术术语效果大幅优于 text2vec
+# 切换后必须重新上传 PDF 索引（维度不兼容）
+EMBEDDING_MODEL = "BAAI/bge-large-zh-v1.5"
+EMBEDDING_DIM = 1024
 
 # ─── ChromaDB ─────────────────────────────────────────
 CHROMADB_DIR = os.getenv("CHROMADB_DIR", "/tmp/chromadb")
