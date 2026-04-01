@@ -114,9 +114,30 @@
       border-radius: 4px;
       margin-top: 6px;
     }
-    .status.ready    { background: rgba(58,107,196,0.12); color: var(--success); }
-    .status.processing { background: rgba(196,75,58,0.12); color: var(--accent); }
-    .status.error    { background: rgba(155,58,196,0.12); color: var(--danger); }
+    .status.ready       { background: rgba(58,107,196,0.12); color: var(--success); }
+    .status.processing  { background: rgba(196,75,58,0.12); color: var(--accent); }
+    .status.error       { background: rgba(155,58,196,0.12); color: var(--danger); }
+
+    /* 进度条 */
+    .progress-bar-wrap {
+      margin: 8px 0 0;
+      background: #eee;
+      border-radius: 6px;
+      height: 6px;
+      overflow: hidden;
+    }
+    .progress-bar-fill {
+      height: 100%;
+      background: var(--accent);
+      border-radius: 6px;
+      transition: width 0.3s ease;
+      width: 0%;
+    }
+    .progress-label {
+      font-size: 12px;
+      color: var(--ink-500);
+      margin-top: 4px;
+    }
 
     /* ── 右侧：RAG 问答 ─────────────────────────────────────── */
     .panel-right {
@@ -319,6 +340,10 @@
         <input type="file" id="file-input" accept=".pdf" style="display:none" />
       </div>
       <div id="upload-status" style="padding:0 24px;font-size:13px;color:var(--ink-500);"></div>
+      <div id="upload-progress" style="padding:0 24px 8px;font-size:12px;display:none">
+        <div id="progress-label">准备中…</div>
+        <div class="progress-bar-wrap"><div class="progress-bar-fill" id="progress-fill"></div></div>
+      </div>
       <div class="paper-list">
         <h3>我的论文</h3>
         <div id="papers-container"></div>
@@ -485,10 +510,63 @@
     }
     uploading = true;
     const status = document.getElementById('upload-status');
-    status.textContent = `⏳ 正在上传并索引: ${file.name} …`;
+    const progressWrap = document.getElementById('upload-progress');
+    const progressLabel = document.getElementById('progress-label');
+    const progressFill = document.getElementById('progress-fill');
+    status.textContent = `⏳ 正在上传: ${file.name} …`;
+    progressWrap.style.display = 'block';
+    progressFill.style.width = '5%';
+    progressLabel.textContent = '上传中…';
 
     const formData = new FormData();
     formData.append('file', file);
+
+    let paperId = null;
+    let sseSource = null;
+
+    function connectSSE(pId) {
+      // 连接 SSE 接收实时进度
+      sseSource = new EventSource(`${API}/papers/${pId}/events`, {
+        withCredentials: false
+      });
+      sseSource.onmessage = (e) => {
+        const event = JSON.parse(e.data);
+        const stage = event.stage;
+        const pct = Math.round(event.progress * 100);
+        progressFill.style.width = pct + '%';
+
+        const stageLabels = {
+          parsing:    '解析 PDF…',
+          chunking:   '切分文本…',
+          embedding:  '生成向量…',
+          indexing:   '写入向量库…',
+          complete:   '索引完成！',
+          error:      `索引失败: ${event.error || '未知错误'}`,
+        };
+        progressLabel.textContent = stageLabels[stage] || stage || `进度 ${pct}%`;
+
+        if (stage === 'complete') {
+          progressFill.style.background = '#3a6bc4';
+          progressFill.style.width = '100%';
+          progressLabel.textContent = `✅ 已索引 ${event.chunks_count || 0} 个片段`;
+          // 局部更新论文列表中的状态
+          if (paperId) updatePaperStatus(paperId, 'ready', event.chunks_count);
+          if (sseSource) { sseSource.close(); sseSource = null; }
+          setTimeout(() => {
+            progressWrap.style.display = 'none';
+            progressFill.style.background = '';
+            loadQuota();
+          }, 3000);
+        } else if (stage === 'error') {
+          progressFill.style.background = '#9b3ac4';
+          if (sseSource) { sseSource.close(); sseSource = null; }
+        }
+      };
+      sseSource.onerror = () => {
+        // SSE 断开不影响主流程（轮询兜底）
+        if (sseSource) { sseSource.close(); sseSource = null; }
+      };
+    }
 
     try {
       const resp = await fetch(API + '/papers/upload', {
@@ -498,11 +576,15 @@
       });
       const data = await resp.json();
       if (!resp.ok) throw new Error(data.detail || '上传失败');
-      status.textContent = `✅ ${file.name} — 已索引 ${data.chunks_count} 个片段`;
-      loadPapers();
-      loadQuota();
+      paperId = data.paper_id;
+      status.textContent = `⏳ 已上传，正在索引: ${data.title || file.name} …`;
+      progressFill.style.width = '10%';
+      progressLabel.textContent = '等待索引队列…';
+      // 连接 SSE 接收实时进度
+      connectSSE(paperId);
     } catch(e) {
       status.textContent = `❌ ${e.message}`;
+      progressWrap.style.display = 'none';
     } finally {
       uploading = false;
     }
@@ -518,10 +600,14 @@
         return;
       }
       container.innerHTML = papers.map(p => `
-        <div class="paper-item">
+        <div class="paper-item" data-paper-id="${p.paper_id}">
           <div class="title">${escapeHtml(p.title)}</div>
-          <div class="meta">${p.chunks_count ? p.chunks_count + ' 个片段' : ''}</div>
-          <span class="status ${p.status}">${p.status === 'ready' ? '✅ 已索引' : p.status === 'processing' ? '⏳ 索引中' : '❌ 失败'}</span>
+          <div class="meta">${p.chunks_count ? p.chunks_count + ' 个片段' : '处理中…'}</div>
+          <span class="status ${p.status}" id="status-${p.paper_id}">${
+            p.status === 'ready' ? '✅ 已索引'
+            : p.status === 'processing' ? '⏳ 索引中'
+            : '❌ 失败'
+          }</span>
         </div>
       `).join('');
     } catch(e) { console.error(e); }
@@ -604,8 +690,25 @@
     chatInput.style.height = Math.min(chatInput.scrollHeight, 120) + 'px';
   };
 
-  /* ── 工具 ──────────────────────────────────────────────── */
-  function escapeHtml(s) {
+  /* ── 论文状态局部更新（SSE complete 时调用）─────────────── */
+  function updatePaperStatus(paperId, newStatus, chunksCount) {
+    const el = document.getElementById(`status-${paperId}`);
+    if (!el) return;
+    el.className = `status ${newStatus}`;
+    if (newStatus === 'ready') {
+      el.textContent = `✅ 已索引${chunksCount ? ' ' + chunksCount + ' 个片段' : ''}`;
+    } else if (newStatus === 'processing') {
+      el.textContent = '⏳ 索引中';
+    } else if (newStatus === 'error') {
+      el.textContent = '❌ 失败';
+    }
+    // 更新 meta 字段
+    const item = el.closest('.paper-item');
+    if (item) {
+      const meta = item.querySelector('.meta');
+      if (meta && chunksCount) meta.textContent = chunksCount + ' 个片段';
+    }
+  }
     const d = document.createElement('div');
     d.textContent = s;
     return d.innerHTML;
