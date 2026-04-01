@@ -178,7 +178,7 @@ async def generate_answer(
     answer_text = client.chat(
         messages=messages,
         model=model,
-        max_tokens=max_tokens,
+        max_tokens=4096,
         temperature=0.3,  # 偏低，学术回答要准确不要发散
     )
 

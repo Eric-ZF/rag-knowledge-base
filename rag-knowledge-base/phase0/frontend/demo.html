@@ -190,7 +190,7 @@ async function doChat() {
         `<span class="cite">页${c.page_number}</span>`
       ).join('') + '</div>';
     }
-    div.innerHTML = `<div class="q">Q: ${q}</div><div class="a">${r.answer.substring(0, 500)}${cites}</div>`;
+    div.innerHTML = `<div class="q">Q: ${q}</div><div class="a">${r.answer}${cites}</div>`;
     qaList.prepend(div);
     document.getElementById('chatStatus').textContent = '✅ 回答完成';
     document.getElementById('chatStatus').className = 'status ok';
