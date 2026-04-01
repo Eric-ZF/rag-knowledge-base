@@ -434,13 +434,30 @@
   };
 
   // 启动时检查 token（不预填，过期 token 会导致 API 401）
-  const savedToken = localStorage.getItem('token');
-  const savedEmail = localStorage.getItem('email');
-  if (savedToken) {
-    token = savedToken;
-    userEmail = savedEmail || '';
-    showApp();
+  async function validateAndResumeToken() {
+    const savedToken = localStorage.getItem('token');
+    if (!savedToken) return;
+    try {
+      // 检查 JWT 是否过期（前端解码 exp）
+      const parts = savedToken.split('.');
+      if (parts.length !== 3) throw new Error('Malformed token');
+      const payload = JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')));
+      if (payload.exp && Date.now() / 1000 > payload.exp) throw new Error('Token expired');
+      // 用这个 token 调 /me/quota 验证它是否在 backend 仍有效
+      const data = await api('GET', '/me/quota');
+      token = savedToken;
+      userEmail = localStorage.getItem('email') || '';
+      showApp();
+    } catch(e) {
+      // token 无效或过期：清除本地状态，让用户重新登录
+      localStorage.removeItem('token');
+      localStorage.removeItem('email');
+      localStorage.removeItem('userId');
+      localStorage.removeItem('collection');
+      localStorage.removeItem('plan');
+    }
   }
+  validateAndResumeToken();
 
   /* ── 文件上传 ──────────────────────────────────────────── */
   const uploadZone = document.getElementById('upload-zone');
