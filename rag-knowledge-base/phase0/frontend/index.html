@@ -394,9 +394,13 @@
     const opts = { method, headers };
     if (body) opts.body = JSON.stringify(body);
     const r = await fetch(API + path, opts);
-    const data = await r.json();
+    let data;
+    try {
+        data = await r.json();
+    } catch {
+        throw new Error(`HTTP ${r.status} — 响应解析失败`);
+    }
     if (!r.ok) {
-        const data = await r.json().catch(() => ({}));
         const msg = Array.isArray(data.detail)
           ? data.detail.map(e => e.msg || JSON.stringify(e)).join(', ')
           : (data.detail || `HTTP ${r.status}`);
