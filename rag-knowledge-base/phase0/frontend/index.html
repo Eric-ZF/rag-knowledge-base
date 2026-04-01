@@ -713,6 +713,9 @@
       if (meta && chunksCount) meta.textContent = chunksCount + ' 个片段';
     }
   }
+
+  /* ── 工具 ──────────────────────────────────────────────── */
+  function escapeHtml(s) {
     const d = document.createElement('div');
     d.textContent = s;
     return d.innerHTML;
