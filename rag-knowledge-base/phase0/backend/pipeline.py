@@ -118,16 +118,26 @@ async def process_pdf(
     paper_id: str,
     collection_name: str,
     title: str = "",
-    openai_api_key: str = "",  # 保留参数签名兼容
+    openai_api_key: str = "",
     persist_directory: str = CHROMADB_DIR,
+    progress_callback: callable = None,
 ) -> dict[str, Any]:
     """
     完整 pipeline：PDF → 解析 → 分块 → 本地向量 → ChromaDB
 
+    Args:
+        progress_callback: 进度回调，签名为 emit(stage, progress, **kwargs)
+                          stage: parsing | chunking | embedding | indexing | complete | error
+
     Returns: {chunks_count}
     """
+    def emit(stage: str, progress: float, **kwargs):
+        if progress_callback:
+            progress_callback(stage, progress, **kwargs)
+
     # 1. 解析 PDF
     print(f"[{paper_id}] 开始解析 PDF...")
+    emit("parsing", 0.1)
     raw_docs = parse_pdf(pdf_path)
     print(f"[{paper_id}] 解析完成，共 {len(raw_docs)} 个元素")
 
@@ -135,6 +145,7 @@ async def process_pdf(
         raise ValueError(f"PDF 解析失败，文档为空: {pdf_path}")
 
     # 2. 分块
+    emit("chunking", 0.3)
     chunks = chunk_documents(raw_docs)
     print(f"[{paper_id}] 分块完成，共 {len(chunks)} 个 chunks")
 
@@ -142,6 +153,7 @@ async def process_pdf(
         raise ValueError(f"PDF 分块失败，chunks 为空: {pdf_path}")
 
     # 3. 初始化 MiniMax Embedding
+    emit("embedding", 0.5)
     embedding_fn = get_chroma_embedding_fn()
 
     # 4. 初始化 ChromaDB
@@ -155,6 +167,7 @@ async def process_pdf(
     )
 
     # 5. 写入向量
+    emit("indexing", 0.7)
     texts = [c.page_content for c in chunks]
     metadatas = [
         {
@@ -172,6 +185,7 @@ async def process_pdf(
     print(f"[{paper_id}] ✅ 向量写入完成，{len(chunks)} 个 chunks → collection '{safe_collection_name}'")
     print(f"[{paper_id}]    Embedding 模型: {EMBEDDING_MODEL}（本地，{EMBEDDING_DIM} 维）")
 
+    emit("complete", 1.0, chunks_count=len(chunks))
     return {"chunks_count": len(chunks)}
 
 

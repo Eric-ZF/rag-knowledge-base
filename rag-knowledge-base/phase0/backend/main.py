@@ -3,15 +3,17 @@ Phase 0.6 — FastAPI 入口
 papers_db + users_db 全部持久化为 JSON，重启不丢失。
 """
 
-import os, re, uuid
+import os, re, uuid, json, asyncio
 from datetime import datetime
 from pathlib import Path
+from typing import Generator
 
 from dotenv import load_dotenv
 load_dotenv()
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Depends, Header, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from auth import create_access_token, verify_token, hash_password, verify_password
@@ -33,6 +35,10 @@ except RuntimeError as e:
 # ─── 数据层初始化（从 JSON 恢复）─────────────────────
 init_papers()
 users_db, users_by_email = init_users()
+
+# ─── SSE 索引进度（全局事件总线）────────────────────
+# paper_id → {"stage": str, "progress": float, "chunks_count": int|None, "error": str|None}
+processing_events: dict[str, dict] = {}
 
 # ─── FastAPI ─────────────────────────────────────────
 app = FastAPI(
@@ -144,21 +150,36 @@ def get_current_user(authorization: str = Header(None)):
 
 # ─── 后台任务：处理 PDF ───────────────────────────────
 def _process_pdf_background(paper_id: str, tmp_path: str, collection: str, title: str):
+    def emit(stage: str, progress: float, **kwargs):
+        """向 SSE 总线推送进度"""
+        event = {"stage": stage, "progress": progress, "paper_id": paper_id, **kwargs}
+        processing_events[paper_id] = event
+
     try:
         import asyncio
+        emit("parsing", 0.1)
         result = asyncio.run(process_pdf(
             pdf_path=tmp_path,
             paper_id=paper_id,
             collection_name=collection,
             title=title,
+            progress_callback=emit,
         ))
         update_paper(paper_id, status="ready", chunks_count=result["chunks_count"])
+        emit("complete", 1.0, chunks_count=result["chunks_count"])
         print(f"[{paper_id}] ✅ 索引完成，{result['chunks_count']} chunks")
     except Exception as e:
         update_paper(paper_id, status="error", error=str(e))
+        emit("error", 0, error=str(e))
         print(f"[{paper_id}] ❌ 索引失败: {e}")
     finally:
         Path(tmp_path).unlink(missing_ok=True)
+        # 处理完成后延迟清理事件（给 SSE 留时间推送）
+        import threading
+        def cleanup():
+            import time; time.sleep(30)
+            processing_events.pop(paper_id, None)
+        threading.Thread(target=cleanup, daemon=True).start()
 
 
 # ─── PDF 上传 ────────────────────────────────────────
@@ -203,6 +224,43 @@ async def upload_paper(
 
     background_tasks.add_task(_process_pdf_background, paper_id, tmp_path, user["collection"], title)
     return PaperUploadResponse(paper_id=paper_id, title=title, status="processing")
+
+
+@app.get("/papers/{paper_id}/events")
+async def paper_events(paper_id: str, user_info: tuple = Depends(get_current_user)):
+    """SSE 实时推送论文索进进度"""
+    _, user = user_info
+    p = get_paper(paper_id)
+    if not p or p["user_id"] != user_info[0]:
+        raise HTTPException(404, "论文不存在")
+
+    async def event_generator():
+        # 已完成的直接发
+        if p["status"] == "ready":
+            yield f"data: {json.dumps({'stage':'complete','progress':1.0,'paper_id':paper_id,'chunks_count':p.get('chunks_count')})}\n\n"
+            return
+        if p["status"] == "error":
+            yield f"data: {json.dumps({'stage':'error','progress':0,'paper_id':paper_id,'error':p.get('error','')})}\n\n"
+            return
+
+        # 轮询 processing_events 直到完成
+        for _ in range(300):  # 最多 5 分钟
+            event = processing_events.get(paper_id)
+            if event:
+                yield f"data: {json.dumps(event)}\n\n"
+                if event["stage"] in ("complete", "error"):
+                    break
+            await asyncio.sleep(1)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.get("/papers/{paper_id}/status")
