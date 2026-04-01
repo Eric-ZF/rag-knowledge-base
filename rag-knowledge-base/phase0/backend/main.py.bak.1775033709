@@ -1,28 +1,31 @@
 """
-Phase 0.6 — FastAPI 入口
-papers_db + users_db 全部持久化为 JSON，重启不丢失。
+Phase 0 验证 Sprint — FastAPI 入口
+使用 MiniMax M2（Chat）+ 本地 sentence-transformers（Embedding）
+
+PapersDB 持久化：所有论文元数据写入 /root/.openclaw/rag-data/papers_db.json
 """
 
-import os, re, uuid
+import os
+import re
+import uuid
+import asyncio
 from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
-load_dotenv()
-
 from fastapi import FastAPI, HTTPException, UploadFile, File, Depends, Header, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from auth import create_access_token, verify_token, hash_password, verify_password
-from config import validate_minimax_chat_config, MINIMAX_API_KEY, MINIMAX_GROUP_ID, CHROMADB_DIR
-from data import (
-    init_papers, init_users,
-    get_paper, upsert_paper, update_paper, delete_paper,
-    get_user_papers,
-)
+from auth import create_access_token, verify_token
+from config import validate_minimax_chat_config, MINIMAX_API_KEY, MINIMAX_GROUP_ID, PAPERS_DB_PATH
+import papers_db as _papers_db_mod
 from pipeline import process_pdf, search_chunks
 from chat import generate_answer
+
+# ─── 环境变量 ─────────────────────────────────────────
+load_dotenv()
+DEBUG = os.getenv("DEBUG", "true").lower() == "true"
 
 # ─── 启动验证 ─────────────────────────────────────────
 try:
@@ -30,15 +33,14 @@ try:
 except RuntimeError as e:
     print(f"⚠️  {e}")
 
-# ─── 数据层初始化（从 JSON 恢复）─────────────────────
-init_papers()
-users_db, users_by_email = init_users()
+# ─── PapersDB 持久化初始化 ───────────────────────────
+_papers_db_mod.init(PAPERS_DB_PATH)
 
 # ─── FastAPI ─────────────────────────────────────────
 app = FastAPI(
-    title="RAG 学术知识库 — Phase 0.6",
+    title="RAG 学术知识库 — Phase 0（MiniMax + 本地 Embedding）",
     version="0.6.0",
-    debug=os.getenv("DEBUG", "true").lower() == "true",
+    debug=DEBUG,
 )
 
 app.add_middleware(
@@ -49,24 +51,33 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ─── 内存存储 ─────────────────────────────────────────
+users_db: dict = {}       # key = user_id (uuid)  ← 仍是内存，Phase 1 持久化
+users_by_email: dict = {}  # key = email，O(1) 登录查找
+# papers_db 已迁移到 papers_db 模块（JSON 持久化）
+
 # ─── Pydantic 模型 ────────────────────────────────────
 class ChatRequest(BaseModel):
     question: str
     collection_name: str | None = None
     top_k: int = 5
 
+
 class ChatResponse(BaseModel):
     answer: str
     citations: list[dict]
+
 
 class PaperUploadResponse(BaseModel):
     paper_id: str
     title: str
     status: str
 
+
 class RegisterRequest(BaseModel):
     email: str
     password: str
+
 
 class LoginRequest(BaseModel):
     email: str
@@ -88,7 +99,8 @@ async def health():
 # ─── 认证 ─────────────────────────────────────────────
 @app.post("/auth/register")
 async def register(req: RegisterRequest):
-    email, password = req.email, req.password
+    email = req.email
+    password = req.password
     if email in users_by_email:
         raise HTTPException(400, "邮箱已注册")
     user_id = str(uuid.uuid4())
@@ -96,21 +108,22 @@ async def register(req: RegisterRequest):
     user_record = {
         "email": email,
         "user_id": user_id,
-        "password": hash_password(password),  # bcrypt 哈希存储
+        "password": password,
         "plan": "free",
+        "papers": [],
         "collection": collection_name,
     }
     users_db[user_id] = user_record
     users_by_email[email] = user_record
-    _save_users()
     return {"user_id": user_id, "collection": collection_name}
 
 
 @app.post("/auth/login")
 async def login(req: LoginRequest):
-    email, password = req.email, req.password
+    email = req.email
+    password = req.password
     user = users_by_email.get(email)
-    if not user or not verify_password(password, user["password"]):
+    if not user or user["password"] != password:
         raise HTTPException(401, "邮箱或密码错误")
     token = create_access_token({"sub": email, "user_id": user["user_id"]})
     return {
@@ -121,11 +134,6 @@ async def login(req: LoginRequest):
     }
 
 
-def _save_users() -> None:
-    from data import _save_users as _su
-    _su(users_db)
-
-
 def get_current_user(authorization: str = Header(None)):
     if not authorization:
         raise HTTPException(401, "未提供认证信息")
@@ -134,8 +142,11 @@ def get_current_user(authorization: str = Header(None)):
         if scheme.lower() != "bearer":
             raise HTTPException(401, "无效的认证方式")
         payload = verify_token(token)
-        email, user_id = payload["sub"], payload.get("user_id")
-        if not user_id or user_id not in users_db:
+        email = payload["sub"]
+        user_id = payload.get("user_id")
+        if not user_id:
+            raise HTTPException(401, "Token 中缺少 user_id")
+        if user_id not in users_db:
             raise HTTPException(401, "用户不存在")
         return user_id, users_db[user_id]
     except (ValueError, KeyError):
@@ -144,31 +155,41 @@ def get_current_user(authorization: str = Header(None)):
 
 # ─── 后台任务：处理 PDF ───────────────────────────────
 def _process_pdf_background(paper_id: str, tmp_path: str, collection: str, title: str):
+    """
+    后台运行的 PDF 处理任务，在线程池中执行，不阻塞事件循环。
+    状态更新通过 papers_db 模块写入 JSON 文件，持久化不丢失。
+    """
     try:
-        import asyncio
-        result = asyncio.run(process_pdf(
+        import asyncio as _asyncio
+        result = _asyncio.run(process_pdf(
             pdf_path=tmp_path,
             paper_id=paper_id,
             collection_name=collection,
             title=title,
         ))
-        update_paper(paper_id, status="ready", chunks_count=result["chunks_count"])
+        _papers_db_mod.update_status(
+            paper_id,
+            status="ready",
+            chunks_count=result["chunks_count"],
+        )
         print(f"[{paper_id}] ✅ 索引完成，{result['chunks_count']} chunks")
     except Exception as e:
-        update_paper(paper_id, status="error", error=str(e))
+        _papers_db_mod.update_status(paper_id, status="error", error=str(e))
         print(f"[{paper_id}] ❌ 索引失败: {e}")
     finally:
         Path(tmp_path).unlink(missing_ok=True)
 
 
-# ─── PDF 上传 ────────────────────────────────────────
+# ─── PDF 上传（立即返回，后台处理）──────────────────
 @app.post("/papers/upload", response_model=PaperUploadResponse)
 async def upload_paper(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     user_info: tuple = Depends(get_current_user),
 ):
+    """上传 PDF 后立即返回，后台异步处理索引"""
     user_id, user = user_info
+
     if not MINIMAX_API_KEY or not MINIMAX_GROUP_ID:
         raise HTTPException(503, "MiniMax API 未配置")
     if not file.filename.endswith(".pdf"):
@@ -180,15 +201,16 @@ async def upload_paper(
         raise HTTPException(413, f"文件大小超过限制（最大 50MB），当前: {len(content)//1024//1024}MB")
 
     if user["plan"] == "free" and len(user["papers"]) >= 20:
-        raise HTTPException(429, "免费用户论文上限 20 篇")
+        raise HTTPException(429, "免费用户论文上限 20 篇，请升级到 Pro")
 
     paper_id = str(uuid.uuid4())
-    title = file.filename.replace(".pdf", "").strip()
+    title = file.filename.replace(".pdf", "")
 
     tmp_path = f"/tmp/{paper_id}.pdf"
-    Path(tmp_path).write_bytes(content)
+    with open(tmp_path, "wb") as f:
+        f.write(content)
 
-    upsert_paper(paper_id, {
+    _papers_db_mod.upsert(paper_id, {
         "paper_id": paper_id,
         "user_id": user_id,
         "title": title,
@@ -199,16 +221,17 @@ async def upload_paper(
         "created_at": datetime.utcnow().isoformat(),
     })
     user["papers"].append(paper_id)
-    _save_users()
 
     background_tasks.add_task(_process_pdf_background, paper_id, tmp_path, user["collection"], title)
+
     return PaperUploadResponse(paper_id=paper_id, title=title, status="processing")
 
 
 @app.get("/papers/{paper_id}/status")
 async def paper_status(paper_id: str, user_info: tuple = Depends(get_current_user)):
+    """轮询论文索进状态"""
     _, user = user_info
-    p = get_paper(paper_id)
+    p = _papers_db_mod.get(paper_id)
     if not p or p["user_id"] != user_info[0]:
         raise HTTPException(404, "论文不存在")
     return {
@@ -223,69 +246,83 @@ async def paper_status(paper_id: str, user_info: tuple = Depends(get_current_use
 @app.get("/papers")
 async def list_papers(user_info: tuple = Depends(get_current_user)):
     _, user = user_info
-    return [
-        {
-            "paper_id": pid,
-            "title": p["title"],
-            "status": p["status"],
-            "chunks_count": p.get("chunks_count"),
-        }
-        for pid in user["papers"]
-        if (p := get_paper(pid))
-    ]
+    result = []
+    for pid in user["papers"]:
+        p = _papers_db_mod.get(pid)
+        if p:
+            result.append({
+                "paper_id": pid,
+                "title": p["title"],
+                "status": p["status"],
+                "chunks_count": p.get("chunks_count"),
+            })
+    return result
 
 
 @app.delete("/papers/{paper_id}")
 async def delete_paper(paper_id: str, user_info: tuple = Depends(get_current_user)):
+    """删除论文：清理 ChromaDB 中的 chunks + papers_db 记录"""
     _, user = user_info
-    p = get_paper(paper_id)
+    p = _papers_db_mod.get(paper_id)
     if not p or p["user_id"] != user_info[0]:
         raise HTTPException(404, "论文不存在")
     if p["status"] == "processing":
         raise HTTPException(409, "论文正在处理中，无法删除")
 
-    # 从 ChromaDB 删除 chunks
+    # 从 ChromaDB 中删除该 paper 的所有 chunks
     try:
         import chromadb
+        from config import CHROMADB_DIR
         client = chromadb.PersistentClient(path=CHROMADB_DIR)
         safe_name = re.sub(r"[^a-zA-Z0-9_]", "_", p["collection"])
         col = client.get_collection(safe_name)
         results = col.get(where={"paper_id": paper_id})
         if results["ids"]:
             col.delete(ids=results["ids"])
-            print(f"[{paper_id}] 🗑️ 删除 {len(results['ids'])} chunks")
+            print(f"[{paper_id}] 🗑️ 从 ChromaDB 删除 {len(results['ids'])} 个 chunks")
     except Exception as e:
-        print(f"[{paper_id}] ⚠️ ChromaDB 删除失败: {e}")
+        print(f"[{paper_id}] ⚠️ ChromaDB 清理失败: {e}")
 
     user["papers"].remove(paper_id)
-    _save_users()
-    delete_paper(paper_id)
-    return {"ok": True, "paper_id": paper_id, "title": p["title"]}
+    title = p["title"]
+    _papers_db_mod.delete(paper_id)
+    print(f"[{paper_id}] ✅ 论文已删除: {title}")
+    return {"ok": True, "paper_id": paper_id, "title": title}
 
 
 # ─── RAG 问答 ─────────────────────────────────────────
 @app.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest, user_info: tuple = Depends(get_current_user)):
-    _, user = user_info
+    user_id, user = user_info
+
     if not MINIMAX_API_KEY or not MINIMAX_GROUP_ID:
         raise HTTPException(503, "MiniMax API 未配置")
 
     collection = req.collection_name or user["collection"]
 
-    # 只查询 status=ready 的论文
-    ready = [
+    # 只查 status=ready 且在用户列表中的论文
+    user_papers = [
         pid for pid in user["papers"]
-        if (p := get_paper(pid)) and p["status"] == "ready"
+        if _papers_db_mod.get(pid)
+        and _papers_db_mod.get(pid)["status"] == "ready"
     ]
-    if not ready:
+    if not user_papers:
         return ChatResponse(
             answer="你的论文库还没有已索引的论文，请先上传 PDF 并等待索引完成。",
             citations=[],
         )
 
-    chunks = await search_chunks(query=req.question, collection_name=collection, top_k=req.top_k)
+    chunks = await search_chunks(
+        query=req.question,
+        collection_name=collection,
+        top_k=req.top_k,
+    )
+
     if not chunks:
-        return ChatResponse(answer="抱歉，我在你的论文库中没有找到相关内容。", citations=[])
+        return ChatResponse(
+            answer="抱歉，我在你的论文库中没有找到相关内容。",
+            citations=[],
+        )
 
     try:
         answer_text, citations = await generate_answer(question=req.question, chunks=chunks)
@@ -300,11 +337,12 @@ async def my_quota(user_info: tuple = Depends(get_current_user)):
     return {
         "plan": user["plan"],
         "papers_used": len(user["papers"]),
-        "papers_limit": None if user["plan"] == "pro" else 20,
+        "papers_limit": 20 if user["plan"] == "free" else None,
         "collection": user["collection"],
     }
 
 
+# ─── 启动 ─────────────────────────────────────────────
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

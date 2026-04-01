@@ -6,29 +6,34 @@
 - **登录**: bosstest@boss.io / BossPhase0（pro 账号）
 - **偏好**: 直接给结论，不要过多询问
 
-## RAG 学术知识库项目（Phase 0）
+## RAG 学术知识库项目（Phase 0.6）
 - **项目路径**: `/root/.openclaw/workspace/rag-knowledge-base/phase0/`
-- **后端**: FastAPI on :8000
+- **后端**: FastAPI on :8000，start_backend.py 启动
 - **前端**: http.server on :8080
-- **向量库**: ChromaDB at /tmp/chromadb/
+- **向量库**: ChromaDB at /root/.openclaw/rag-data/chromadb/
+- **持久化**: papers_db.json + users_db.json at /root/.openclaw/rag-data/
 - **当前 collection**: user_1d2a4dc3_550f_4f89_b97b_2b057705381c（bosstest 用户）
-- **当前论文**: d03a2761... (542chunks, 阮建平, CBAM论文), 23a1b6b8... (37chunks, 李涛, CBAM钢铁行业)
 
 ### 已修复的 RAG 质量问题（2026-03-31）
 - chunk_size: 800→2000, overlap: 80→200
 - top_k: 5→8
-- 新增 Hybrid Search（向量+BM25融合）
+- 新增 Hybrid Search（向量+关键词融合+页码权重）
 - MiniMax-M2.7 模型
 - System Prompt 强化引用要求
+- MiniMax 520/529 自动重试（3次，指数退避）
+
+### Phase 0.6 持久化（2026-04-01）
+- papers_db → /root/.openclaw/rag-data/papers_db.json（每次写入自动落盘）
+- users_db → /root/.openclaw/rag-data/users_db.json
+- start_backend.py 简化：无需手动注入，数据自动从 JSON 恢复
 
 ### ⚠️ 重要约束
-- **不要切换 Embedding 模型**：text2vec(768维)和 eambo-01(1024维)维度不同，切换需重建所有索引
-- **backend 重启后需用 /tmp/start_backend.py 恢复用户数据**
-- **不要再用 localtunnel**：改用公网IP直连（安全组已开放8000/8080）
-- **全角/半角归一化必须在关键词匹配前执行**：PDF文本用全角（ＣＢＡＭ），必须归一化后匹配
-- **demo.html API URL 永久指向：http://124.156.204.163:8000**
+- **Embedding 模型冲突**：ChromaDB 历史 chunks 用 text2vec(384d)，当前 BGE(1024d)，重建索引前不要混用
+- **全角/半角归一化**：PDF文本用全角（ＣＢＡＭ），必须在关键词匹配前归一化
+- **demo.html API URL**: http://124.156.204.163:8000
+- **index.html API URL**: http://124.156.204.163:8000（两个文件要同步更新）
 
-### MiniMax API 配置（已验证）
+### MiniMax API 配置
 - Chat: `https://api.minimax.chat/v1/chat/completions`
 - Auth: `Authorization: Bearer {api_key}` + `GroupId: {group_id}`
 - Models: MiniMax-M2.7（推荐）, MiniMax-M2, MiniMax-Text-01
@@ -51,3 +56,9 @@
 4. **登录"没反应"≠ 功能问题：** 可能是 JS 解析失败，浏览器无报错，用 agent-browser 自动化测试可发现
 5. **Pre-commit 检查 > 上线后救火：** 4 项检查（TypeScript/截断/tunnel/未定义变量）在 commit 前拦截问题
 6. **DEMO_TOKEN 不要硬编码：** token 有过期时间，userId 格式可能变，fallback token 会绕过登录表单但 API 会 401
+
+## 今日教训（2026-04-01 补充）
+7. **papers_db 内存化是核心 P0 bug：** 后台任务在旧进程完成写入，新进程 papers_db 被 clear() 清空 → phantom entries
+8. **ChromaDB papers_db 不同步导致 phantom entries：** ChromaDB 有数据但 papers_db 丢失 → RAG 返回空；papers_db 有记录但 ChromaDB 无数据 → phantom
+9. **Embedding 模型切换导致维度冲突：** text2vec(384d) → BGE(1024d) 切换后旧 chunks 无法检索，需重建索引
+10. **JSON 持久化用 os.replace 原子替换：** 先写 .tmp 再 rename，防止写入中断导致文件损坏
