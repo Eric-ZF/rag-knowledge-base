@@ -433,16 +433,14 @@
     }
   };
 
-  // 启动时检查 token
-  // Phase 0 Demo: 预填测试账号 token
-const DEMO_TOKEN = localStorage.getItem('token') || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJib3NzdGVzdEBib3NzLmlvIiwidXNlcl9pZCI6IjFkMmE0ZGMzLTU1MGYtNGY4OS1iOTdiLTJiMDU3NzA1MzgxYyIsImV4cCI6MTc3NDg4Nzk1OH0.iJQEdfD8FKdt5CKe5M9okco-d2RZmTqlhtW5RszR_1I';
-if (DEMO_TOKEN && DEMO_TOKEN !== '') {
-    token = DEMO_TOKEN;
-    userEmail = 'bosstest@boss.io';
-    userId = '';
-    localStorage.setItem('token', DEMO_TOKEN);
+  // 启动时检查 token（不预填，过期 token 会导致 API 401）
+  const savedToken = localStorage.getItem('token');
+  const savedEmail = localStorage.getItem('email');
+  if (savedToken) {
+    token = savedToken;
+    userEmail = savedEmail || '';
     showApp();
-}
+  }
 
   /* ── 文件上传 ──────────────────────────────────────────── */
   const uploadZone = document.getElementById('upload-zone');
