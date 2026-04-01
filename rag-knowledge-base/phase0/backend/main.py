@@ -6,7 +6,7 @@ papers_db + users_db 全部持久化为 JSON，重启不丢失。
 import os, re, uuid, json, asyncio
 from datetime import datetime
 from pathlib import Path
-from typing import Generator
+from typing import Generator, Literal
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -59,11 +59,14 @@ app.add_middleware(
 class ChatRequest(BaseModel):
     question: str
     collection_name: str | None = None
-    top_k: int = 5
+    top_k: int = 8
+    mode: Literal["default", "methodology", "survey"] = "default"
+    paper_ids: list[str] | None = None  # 可选，限定检索范围
 
 class ChatResponse(BaseModel):
     answer: str
     citations: list[dict]
+    meta: dict = {}
 
 class PaperUploadResponse(BaseModel):
     paper_id: str
@@ -339,15 +342,47 @@ async def chat(req: ChatRequest, user_info: tuple = Depends(get_current_user)):
         return ChatResponse(
             answer="你的论文库还没有已索引的论文，请先上传 PDF 并等待索引完成。",
             citations=[],
+            meta={"mode": req.mode, "paper_count": 0, "chunk_count": 0},
         )
 
-    chunks = await search_chunks(query=req.question, collection_name=collection, top_k=req.top_k)
+    # paper_ids 过滤：如果指定了范围，只保留在范围内的
+    target_pids = set(ready)
+    if req.paper_ids:
+        target_pids = target_pids & set(req.paper_ids)
+        if not target_pids:
+            return ChatResponse(
+                answer="指定的论文不在你的论文库中或尚未索引。",
+                citations=[],
+                meta={"mode": req.mode, "paper_count": 0, "chunk_count": 0},
+            )
+
+    # survey 模式需要更多 chunks（20篇论文 → 检索 40 个 chunks）
+    effective_top_k = max(req.top_k * 5, 20) if req.mode == "survey" else req.top_k
+
+    chunks = await search_chunks(
+        query=req.question,
+        collection_name=collection,
+        top_k=effective_top_k,
+    )
+
+    # 过滤到目标论文范围
+    if req.paper_ids:
+        chunks = [c for c in chunks if c["paper_id"] in target_pids]
+
     if not chunks:
-        return ChatResponse(answer="抱歉，我在你的论文库中没有找到相关内容。", citations=[])
+        return ChatResponse(
+            answer="抱歉，我在你的论文库中没有找到相关内容。",
+            citations=[],
+            meta={"mode": req.mode, "paper_count": 0, "chunk_count": 0},
+        )
 
     try:
-        answer_text, citations = await generate_answer(question=req.question, chunks=chunks)
-        return ChatResponse(answer=answer_text, citations=citations)
+        answer_text, citations, meta = await generate_answer(
+            question=req.question,
+            chunks=chunks,
+            mode=req.mode,
+        )
+        return ChatResponse(answer=answer_text, citations=citations, meta=meta)
     except Exception as e:
         raise HTTPException(500, f"生成答案失败: {e}")
 
