@@ -54,6 +54,9 @@ EMBEDDING_DIM = 1024
 # 放在 /root/.openclaw/rag-data/chromadb，持久化不丢数据
 CHROMADB_DIR = os.getenv("CHROMADB_DIR", "/root/.openclaw/rag-data/chromadb")
 
+# ─── papers_db 持久化路径 ─────────────────────────────
+PAPERS_DB_PATH = os.getenv("PAPERS_DB_PATH", "/root/.openclaw/rag-data/papers_db.json")
+
 # ─── 验证 ──────────────────────────────────────────────
 def validate_minimax_chat_config():
     """验证 MiniMax Chat 配置"""

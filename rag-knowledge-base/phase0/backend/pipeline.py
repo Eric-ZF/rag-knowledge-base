@@ -117,6 +117,7 @@ async def process_pdf(
     pdf_path: str,
     paper_id: str,
     collection_name: str,
+    title: str = "",
     openai_api_key: str = "",  # 保留参数签名兼容
     persist_directory: str = CHROMADB_DIR,
 ) -> dict[str, Any]:
@@ -158,6 +159,7 @@ async def process_pdf(
     metadatas = [
         {
             "paper_id": paper_id,
+            "title": title,
             "chunk_index": i,
             "page_number": c.metadata.get("page_number", 0),
             "text": c.page_content[:200],
