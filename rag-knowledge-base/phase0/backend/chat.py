@@ -97,21 +97,46 @@ class MiniMaxChatClient:
             "temperature": temperature,
         }
 
-        response = self.session.post(
-            self.endpoint,
-            headers=headers,
-            json=payload,
-            timeout=60,
-        )
+        # MiniMax 529 是服务端过载，需要重试
+        max_retries = 3
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                response = self.session.post(
+                    self.endpoint,
+                    headers=headers,
+                    json=payload,
+                    timeout=60,
+                )
+                data = response.json()
 
-        data = response.json()
+                # 检查错误
+                if response.status_code == 529 and attempt < max_retries - 1:
+                    last_error = f"MiniMax API 529 (attempt {attempt+1}/{max_retries}): 服务端过载，重试中..."
+                    import time
+                    time.sleep(2 ** attempt)  # 指数退避 1s, 2s, 4s
+                    continue
 
-        # 检查错误
-        if response.status_code != 200:
-            raise RuntimeError(
-                f"MiniMax API 错误 [{response.status_code}]: "
-                f"{data.get('error', {}).get('message', data)}"
-            )
+                if response.status_code != 200:
+                    raise RuntimeError(
+                        f"MiniMax API 错误 [{response.status_code}]: "
+                        f"{data.get('error', {}).get('message', data)}"
+                    )
+
+                if "choices" not in data or not data["choices"]:
+                    raise RuntimeError(f"MiniMax 返回格式异常: {data}")
+
+                return data["choices"][0]["message"]["content"]
+
+            except requests.exceptions.RequestException as e:
+                last_error = f"MiniMax 网络错误: {e}"
+                if attempt < max_retries - 1:
+                    import time
+                    time.sleep(2 ** attempt)
+                    continue
+                raise RuntimeError(last_error)
+
+        raise RuntimeError(last_error or f"MiniMax API 529 重试{max_retries}次后仍失败")
 
         if "choices" not in data or not data["choices"]:
             raise RuntimeError(f"MiniMax 返回格式异常: {data}")

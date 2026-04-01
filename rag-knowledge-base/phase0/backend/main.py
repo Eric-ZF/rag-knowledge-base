@@ -325,8 +325,12 @@ async def chat(req: ChatRequest, user_info: tuple = Depends(get_current_user)):
             citations=[],
         )
 
-    answer_text, citations = await generate_answer(question=req.question, chunks=chunks)
-    return ChatResponse(answer=answer_text, citations=citations)
+    try:
+        answer_text, citations = await generate_answer(question=req.question, chunks=chunks)
+        return ChatResponse(answer=answer_text, citations=citations)
+    except Exception as e:
+        # 返回明确错误信息，不要让 FastAPI 通用异常处理器返回 500
+        raise HTTPException(500, f"生成答案失败: {e}")
 
 
 @app.get("/me/quota")
