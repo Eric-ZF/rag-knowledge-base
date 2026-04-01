@@ -217,9 +217,24 @@ def hybrid_search(vectorstore, query: str, query_embedding_fn, k: int = 10) -> l
     query_lower = query.lower()
 
     # Step 2: 获取足够多的 chunks 进行关键词过滤
-    # 先获取 k*4 个候选（保证关键词过滤后仍有足够候选）
+    # 直接用 query_embeddings 绕过 ChromaDB 内置 embedder（避免 384d vs 1024d 维度冲突）
     query_vec = query_embedding_fn.embed_query(query)
-    vector_candidates = vectorstore.similarity_search_by_vector(query_vec, k=k * 4)
+    native_results = vectorstore._collection.query(
+        query_embeddings=[query_vec],
+        n_results=k * 4,
+        include=["documents", "metadatas", "distances"],
+    )
+
+    # 将原生结果转换为 Document 对象（兼容后续处理逻辑）
+    from langchain_core.documents import Document
+    vector_candidates = []
+    docs = native_results.get("documents", [[]])[0]
+    metas = native_results.get("metadatas", [[]])[0]
+    dists = native_results.get("distances", [[]])[0]
+    for doc, meta, dist in zip(docs, metas, dists):
+        d = Document(page_content=doc, metadata=meta)
+        d.metadata["_score"] = 1.0 - dist  # distance → similarity
+        vector_candidates.append(d)
 
     if not vector_candidates:
         return []
