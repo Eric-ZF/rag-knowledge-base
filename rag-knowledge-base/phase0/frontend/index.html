@@ -409,6 +409,7 @@
       userEmail = email;
       localStorage.setItem('token', token);
       localStorage.setItem('email', email);
+      localStorage.setItem('collection', data.collection || '');
       // collection 从 login 响应或后续调用获取
       // Phase 0 简单处理：存 email 做识别
       showApp();
@@ -447,6 +448,8 @@
       const data = await api('GET', '/me/quota');
       token = savedToken;
       userEmail = localStorage.getItem('email') || '';
+      collectionName = data.collection || '';
+      localStorage.setItem('collection', collectionName);
       showApp();
     } catch(e) {
       // token 无效或过期：清除本地状态，让用户重新登录
