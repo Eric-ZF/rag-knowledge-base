@@ -360,8 +360,8 @@
   let uploading = false;
 
   /* ── API 基础 ──────────────────────────────────────────── */
-  // Phase 0: 通过 tunnel 访问 API
-  const API = 'https://tough-rat-31.loca.lt';
+  // Phase 0: 公网 IP 直连
+  const API = 'http://124.156.204.163:8000';
 
   async function api(method, path, body, noAuth) {
     const headers = { 'Content-Type': 'application/json' };
@@ -373,7 +373,7 @@
     if (!r.ok) {
         const data = await r.json().catch(() => ({}));
         const msg = Array.isArray(data.detail)
-          ? data.detail.map((e: any) => e.msg || JSON.stringify(e)).join(', ')
+          ? data.detail.map(e => e.msg || JSON.stringify(e)).join(', ')
           : (data.detail || `HTTP ${r.status}`);
         throw new Error(msg);
     }
