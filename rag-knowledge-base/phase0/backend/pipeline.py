@@ -7,6 +7,7 @@ Embedding: shibing624/text2vec-base-chinese（本地运行，零 API 成本）
   - 之后从本地缓存加载
 """
 
+import hashlib
 import os
 import re
 from pathlib import Path
@@ -73,15 +74,16 @@ def get_chroma_embedding_fn():
 
 
 # ─── PDF 解析 ──────────────────────────────────────────
-def parse_pdf(pdf_path: str) -> list[Document]:
+def parse_pdf(pdf_path: str) -> tuple[list[Document], str]:
     """
     使用 pdfplumber 按页提取文本，保留段落自然结构
-    解决 UnstructuredLoader fast策略将每字符/每行当作独立element的问题
+    同时返回 PDF 文本的 SHA256 哈希（用于去重检测）
     """
     import pdfplumber
     from langchain_core.documents import Document
 
     all_docs = []
+    full_text_parts = []
     with pdfplumber.open(pdf_path) as pdf:
         for page_num, page in enumerate(pdf.pages, start=1):
             text = page.extract_text()
@@ -90,7 +92,14 @@ def parse_pdf(pdf_path: str) -> list[Document]:
                     page_content=text.strip(),
                     metadata={"page_number": page_num}
                 ))
-    return all_docs
+                full_text_parts.append(text.strip())
+
+    # 内容去重哈希：基于全文文本（忽略格式差异）
+    content_hash = hashlib.sha256(
+        ("|||".join(full_text_parts)).encode("utf-8")
+    ).hexdigest()
+
+    return all_docs, content_hash
 
 
 # ─── 分块 ─────────────────────────────────────────────
@@ -138,8 +147,8 @@ async def process_pdf(
     # 1. 解析 PDF
     print(f"[{paper_id}] 开始解析 PDF...")
     emit("parsing", 0.1)
-    raw_docs = parse_pdf(pdf_path)
-    print(f"[{paper_id}] 解析完成，共 {len(raw_docs)} 个元素")
+    raw_docs, content_hash = parse_pdf(pdf_path)
+    print(f"[{paper_id}] 解析完成，共 {len(raw_docs)} 个元素，内容哈希: {content_hash[:16]}...")
 
     if not raw_docs:
         raise ValueError(f"PDF 解析失败，文档为空: {pdf_path}")
@@ -186,7 +195,7 @@ async def process_pdf(
     print(f"[{paper_id}]    Embedding 模型: {EMBEDDING_MODEL}（本地，{EMBEDDING_DIM} 维）")
 
     emit("complete", 1.0, chunks_count=len(chunks))
-    return {"chunks_count": len(chunks)}
+    return {"chunks_count": len(chunks), "content_hash": content_hash}
 
 
 # ─── Hybrid Search（关键词预筛 + 向量重排）─────────────

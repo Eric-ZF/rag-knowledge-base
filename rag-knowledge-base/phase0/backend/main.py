@@ -206,6 +206,30 @@ async def upload_paper(
     if user["plan"] == "free" and len(user["papers"]) >= 20:
         raise HTTPException(429, "免费用户论文上限 20 篇")
 
+    # ── 内容去重：计算 SHA256 并检查是否已上传 ─────────
+    import hashlib, pdfplumber
+    tmp_check_path = f"/tmp/_check_{uuid.uuid4()}.pdf"
+    Path(tmp_check_path).write_bytes(content)
+    try:
+        texts = []
+        with pdfplumber.open(tmp_check_path) as pdf:
+            for page in pdf.pages:
+                t = page.extract_text()
+                if t and t.strip():
+                    texts.append(t.strip())
+        content_hash = hashlib.sha256(("|||".join(texts)).encode("utf-8")).hexdigest()
+    finally:
+        Path(tmp_check_path).unlink(missing_ok=True)
+
+    # 检查是否已上传过相同内容
+    existing = [
+        (pid, p["title"]) for pid, p in get_papers_db().items()
+        if p.get("user_id") == user_id and p.get("content_hash") == content_hash
+    ]
+    if existing:
+        dup_pid, dup_title = existing[0]
+        raise HTTPException(409, f"该论文已上传过：'{dup_title}'（ID: {dup_pid[:8]}...），请勿重复上传")
+
     paper_id = str(uuid.uuid4())
     title = file.filename.replace(".pdf", "").strip()
 
@@ -218,6 +242,7 @@ async def upload_paper(
         "title": title,
         "status": "processing",
         "chunks_count": None,
+        "content_hash": content_hash,
         "collection": user["collection"],
         "error": None,
         "created_at": datetime.utcnow().isoformat(),
@@ -284,23 +309,38 @@ async def paper_status(paper_id: str, user_info: tuple = Depends(get_current_use
 @app.get("/papers")
 async def list_papers(user_info: tuple = Depends(get_current_user)):
     _, user = user_info
-    return [
-        {
+    results = []
+    for pid in user["papers"]:
+        p = get_paper(pid)
+        if not p:
+            continue
+        # 从 ChromaDB 查询实际 chunk 数量（papers_db 的 chunks_count 可能为 None）
+        try:
+            import chromadb
+            client = chromadb.PersistentClient(path=CHROMADB_DIR)
+            safe_name = re.sub(r"[^a-zA-Z0-9_]", "_", p["collection"])
+            col = client.get_collection(safe_name)
+            count = len(col.get(where={"paper_id": pid})["ids"])
+        except Exception:
+            count = p.get("chunks_count") or 0
+        except Exception:
+            count = p.get("chunks_count") or 0
+        results.append({
             "paper_id": pid,
             "title": p["title"],
             "status": p["status"],
-            "chunks_count": p.get("chunks_count"),
-        }
-        for pid in user["papers"]
-        if (p := get_paper(pid))
-    ]
+            "chunks_count": count,
+            "created_at": p.get("created_at", ""),
+            "deletable": p["status"] != "processing",
+        })
+    return results
 
 
 @app.delete("/papers/{paper_id}")
 async def delete_paper(paper_id: str, user_info: tuple = Depends(get_current_user)):
-    _, user = user_info
+    user_id, user = user_info
     p = get_paper(paper_id)
-    if not p or p["user_id"] != user_info[0]:
+    if not p or p["user_id"] != user_id:
         raise HTTPException(404, "论文不存在")
     if p["status"] == "processing":
         raise HTTPException(409, "论文正在处理中，无法删除")

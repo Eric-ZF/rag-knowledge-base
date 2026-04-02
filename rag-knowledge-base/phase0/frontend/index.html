@@ -103,8 +103,12 @@
       margin-bottom: 8px;
       cursor: pointer;
       transition: box-shadow 0.15s;
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
     }
     .paper-item:hover { box-shadow: var(--shadow); }
+    .paper-item .paper-body { flex: 1; min-width: 0; }
     .paper-item .title { font-size: 14px; font-weight: 500; color: var(--ink-900); }
     .paper-item .meta { font-size: 12px; color: var(--ink-500); margin-top: 4px; }
     .paper-item .status {
@@ -114,6 +118,21 @@
       border-radius: 4px;
       margin-top: 6px;
     }
+    .paper-item .delete-btn {
+      opacity: 0;
+      background: none;
+      border: none;
+      cursor: pointer;
+      font-size: 16px;
+      color: var(--ink-400);
+      padding: 4px 6px;
+      border-radius: 4px;
+      flex-shrink: 0;
+      transition: opacity 0.15s, color 0.15s;
+      line-height: 1;
+    }
+    .paper-item:hover .delete-btn { opacity: 1; }
+    .paper-item .delete-btn:hover { color: var(--danger); background: rgba(220,50,50,0.08); }
     .status.ready       { background: rgba(58,107,196,0.12); color: var(--success); }
     .status.processing  { background: rgba(196,75,58,0.12); color: var(--accent); }
     .status.error       { background: rgba(155,58,196,0.12); color: var(--danger); }
@@ -426,8 +445,8 @@
   let chatMode = 'default';  // 'default' | 'methodology' | 'survey'
 
   /* ── API 基础 ──────────────────────────────────────────── */
-  // Phase 0: 公网 IP 直连
-  const API = 'http://124.156.204.163:8000';
+  // Phase 0: 走 nginx 反代（公司网络无法直连 8000）
+  const API = 'http://124.156.204.163';
 
   async function api(method, path, body, noAuth) {
     const headers = { 'Content-Type': 'application/json' };
@@ -646,16 +665,31 @@
       }
       container.innerHTML = papers.map(p => `
         <div class="paper-item" data-paper-id="${p.paper_id}">
-          <div class="title">${escapeHtml(p.title)}</div>
-          <div class="meta">${p.chunks_count ? p.chunks_count + ' 个片段' : '处理中…'}</div>
-          <span class="status ${p.status}" id="status-${p.paper_id}">${
-            p.status === 'ready' ? '✅ 已索引'
-            : p.status === 'processing' ? '⏳ 索引中'
-            : '❌ 失败'
-          }</span>
+          <div class="paper-body">
+            <div class="title">${escapeHtml(p.title)}</div>
+            <div class="meta">${p.chunks_count ? p.chunks_count + ' 个片段' : '处理中…'}</div>
+            <span class="status ${p.status}" id="status-${p.paper_id}">${
+              p.status === 'ready' ? '✅ 已索引'
+              : p.status === 'processing' ? '⏳ 索引中'
+              : '❌ 失败'
+            }</span>
+          </div>
+          ${p.deletable ? `<button class="delete-btn" title="删除论文" onclick="event.stopPropagation(); confirmDelete('${p.paper_id}', ${JSON.stringify(p.title).replace(/'/g, "&#39;")})">🗑️</button>` : ''}
         </div>
       `).join('');
     } catch(e) { console.error(e); }
+  }
+
+  /* ── 删除论文 ─────────────────────────────────────────── */
+  async function confirmDelete(paperId, title) {
+    if (!confirm(`确定删除论文 "${title}" 吗？\n\n删除后该论文的所有片段将从知识库中移除，且无法恢复。`)) return;
+    try {
+      await api('DELETE', `/papers/${paperId}`);
+      loadPapers();
+      loadQuota();
+    } catch(e) {
+      alert('删除失败: ' + e.message);
+    }
   }
 
   /* ── 配额显示 ──────────────────────────────────────────── */
