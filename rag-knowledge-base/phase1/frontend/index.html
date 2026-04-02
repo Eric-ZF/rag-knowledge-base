@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>学术知识库 — Phase 1</title>
+  <link rel="stylesheet" href="styles/main.css"/>
+</head>
+<body>
+  <!-- 顶栏 -->
+  <header class="topbar">
+    <div class="topbar-brand">
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+        <circle cx="10" cy="10" r="9" stroke="#3b82f6" stroke-width="2"/>
+        <path d="M6 10h8M10 6v8" stroke="#3b82f6" stroke-width="2" stroke-linecap="round"/>
+      </svg>
+      <span>Academic KB</span>
+    </div>
+    <nav class="topbar-nav">
+      <a href="#search" class="nav-btn active" data-page="search">文献检索</a>
+      <a href="#chat" class="nav-btn" data-page="chat">智能问答</a>
+      <a href="#compare" class="nav-btn" data-page="compare">文献比较</a>
+    </nav>
+    <div class="topbar-user">
+      <span id="user-email">—</span>
+      <button id="logout-btn" class="btn-text">退出</button>
+    </div>
+  </header>
+
+  <!-- 页面容器 -->
+  <main class="page-container">
+
+    <!-- ══════════════════════════════════════
+         页面 1: 文献检索 (search)
+    ══════════════════════════════════════ -->
+    <section id="page-search" class="page active">
+      <div class="layout-sidebar">
+        <!-- 筛选面板 -->
+        <aside class="filter-panel">
+          <h3>筛选条件</h3>
+          <div class="filter-group">
+            <label>关键词</label>
+            <input type="text" id="filter-keyword" placeholder="CBAM / 碳边境 / 绿色创新…" />
+          </div>
+          <div class="filter-group">
+            <label>年份范围</label>
+            <div class="range-inputs">
+              <input type="number" id="filter-year-from" placeholder="从" min="1990" max="2030"/>
+              <span>–</span>
+              <input type="number" id="filter-year-to" placeholder="到" min="1990" max="2030"/>
+            </div>
+          </div>
+          <div class="filter-group">
+            <label>语言</label>
+            <select id="filter-language">
+              <option value="">全部</option>
+              <option value="zh">中文</option>
+              <option value="en">英文</option>
+            </select>
+          </div>
+          <div class="filter-group">
+            <label>研究方法</label>
+            <input type="text" id="filter-method" placeholder="DID / IV / RCT…" />
+          </div>
+          <div class="filter-group">
+            <label>排序</label>
+            <select id="filter-sort">
+              <option value="recent">最新上传</option>
+              <option value="year">发表年份</option>
+              <option value="relevance">相关性</option>
+            </select>
+          </div>
+          <button id="filter-apply" class="btn-primary full">应用筛选</button>
+          <button id="filter-reset" class="btn-secondary full">重置</button>
+        </aside>
+
+        <!-- 论文列表 -->
+        <div class="paper-list-panel">
+          <div class="panel-header">
+            <h2>文献列表</h2>
+            <span id="paper-count" class="badge">0 篇</span>
+          </div>
+          <div id="paper-list" class="paper-list">
+            <!-- 动态填充 -->
+          </div>
+        </div>
+      </div>
+
+      <!-- 论文详情抽屉 -->
+      <aside id="paper-drawer" class="paper-drawer hidden">
+        <button class="drawer-close" id="drawer-close">×</button>
+        <div id="drawer-content">
+          <!-- 动态填充 -->
+        </div>
+      </aside>
+    </section>
+
+    <!-- ══════════════════════════════════════
+         页面 2: 智能问答 (chat)
+    ══════════════════════════════════════ -->
+    <section id="page-chat" class="page">
+      <div class="layout-chat">
+        <!-- 左侧：对话历史 + 设置 -->
+        <aside class="chat-sidebar">
+          <div class="chat-sidebar-header">
+            <h3>检索范围</h3>
+          </div>
+          <div class="papers-badge" id="papers-badge">
+            <!-- 动态：当前论文数 -->
+          </div>
+          <div class="chat-modes">
+            <h4>问答模式</h4>
+            <label class="radio-card selected">
+              <input type="radio" name="chat-mode" value="default" checked/>
+              <span>💬 精准问答</span>
+            </label>
+            <label class="radio-card">
+              <input type="radio" name="chat-mode" value="survey"/>
+              <span>📋 文献综述</span>
+            </label>
+            <label class="radio-card">
+              <input type="radio" name="chat-mode" value="compare"/>
+              <span>⚖️ 研究比较</span>
+            </label>
+          </div>
+          <div class="chat-history">
+            <h4>历史记录</h4>
+            <div id="chat-history-list">
+              <!-- 动态 -->
+            </div>
+          </div>
+        </aside>
+
+        <!-- 右侧：对话主区域 -->
+        <div class="chat-main">
+          <div id="chat-messages" class="chat-messages">
+            <div class="empty-state">
+              <div class="empty-icon">❓</div>
+              <div class="empty-title">开始提问</div>
+              <div class="empty-desc">
+                例如：<br/>
+                "CBAM 对中国出口的影响有哪些研究？"<br/>
+                "有哪些文献用 DID 方法研究环境规制？"
+              </div>
+            </div>
+          </div>
+          <div class="chat-input-area">
+            <textarea
+              id="chat-input"
+              placeholder="输入您的问题，按 Enter 发送（Shift+Enter 换行）…"
+              rows="2"
+            ></textarea>
+            <div class="chat-input-actions">
+              <span class="char-count"><span id="char-count-num">0</span> 字</span>
+              <button id="chat-submit" class="btn-primary">
+                <span class="btn-text">发送</span>
+                <span class="btn-loading hidden">
+                  <svg class="spinner" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" fill="none" stroke-dasharray="31.4" stroke-dashoffset="10"/></svg>
+                </span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 引用溯源面板（右侧悬浮） -->
+        <aside id="evidence-panel" class="evidence-panel hidden">
+          <h3>证据溯源</h3>
+          <div id="evidence-list">
+            <!-- 动态 -->
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <!-- ══════════════════════════════════════
+         页面 3: 文献比较 (compare)
+    ══════════════════════════════════════ -->
+    <section id="page-compare" class="page">
+      <div class="compare-header">
+        <h2>文献比较</h2>
+        <button id="compare-add" class="btn-secondary">+ 添加论文</button>
+      </div>
+      <div class="compare-table-wrapper">
+        <table class="compare-table" id="compare-table">
+          <thead>
+            <tr>
+              <th class="sticky-col">维度</th>
+              <!-- 动态：论文列 -->
+            </tr>
+          </thead>
+          <tbody id="compare-body">
+            <!-- 动态 -->
+          </tbody>
+        </table>
+      </div>
+      <div class="compare-actions">
+        <button id="compare-export-csv" class="btn-secondary">导出 CSV</button>
+        <button id="compare-export-md" class="btn-secondary">导出 Markdown</button>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Toast 通知 -->
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="app.js" type="module"></script>
+</body>
+</html>
