@@ -32,9 +32,15 @@ try:
 except RuntimeError as e:
     print(f"⚠️  {e}")
 
-# ─── 数据层初始化（从 JSON 恢复）─────────────────────
+# ─── 数据层初始化（从 JSON 恢复）────────────────────
 init_papers()
 users_db, users_by_email = init_users()
+
+# ─── Embedding 模型预加载（启动时而非第一次请求时加载）─
+print("📥 预加载 Embedding 模型...")
+from pipeline import get_embedding_model
+_ = get_embedding_model()  # 触发单例加载，消除第一次请求延迟
+print("✅ Embedding 模型就绪")
 
 # ─── SSE 索引进度（全局事件总线）────────────────────
 # paper_id → {"stage": str, "progress": float, "chunks_count": int|None, "error": str|None}
