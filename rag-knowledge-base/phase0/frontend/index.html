@@ -12,12 +12,19 @@
       --ink-900: #1a1a2e;
       --ink-700: #2d2d44;
       --ink-500: #5c5c7a;
+      --ink-400: #9b97a8;
       --paper:   #faf9f7;
       --accent:  #c44b3a;
+      --accent-hover: #a83a2d;
       --border:  #e8e6e3;
       --success: #3a6bc4;
-      --danger:  #9b3ac4;
+      --danger:  #d93636;
+      --warning: #b86b00;
       --shadow:  0 2px 8px rgba(0,0,0,0.08);
+      --shadow-hover: 0 4px 16px rgba(0,0,0,0.12);
+      --radius-sm: 6px;
+      --radius-md: 10px;
+      --radius-lg: 14px;
     }
 
     body {
@@ -25,6 +32,44 @@
       background: var(--paper);
       color: var(--ink-700);
       min-height: 100vh;
+    }
+
+    /* ── Toast 通知 ─────────────────────────────────────── */
+    #toast-container {
+      position: fixed;
+      top: 68px;
+      right: 20px;
+      z-index: 999;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      pointer-events: none;
+    }
+    .toast {
+      padding: 10px 16px;
+      border-radius: var(--radius-md);
+      font-size: 13px;
+      font-weight: 500;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      max-width: 320px;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.15);
+      animation: toastIn 0.25s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+      pointer-events: auto;
+    }
+    .toast.success { background: #1a5c3a; color: #fff; }
+    .toast.error   { background: var(--danger); color: #fff; }
+    .toast.info    { background: var(--ink-700); color: #fff; }
+    .toast.warning  { background: var(--warning); color: #fff; }
+    .toast.fade-out { animation: toastOut 0.3s ease forwards; }
+    @keyframes toastIn {
+      from { opacity: 0; transform: translateX(20px) scale(0.95); }
+      to   { opacity: 1; transform: translateX(0) scale(1); }
+    }
+    @keyframes toastOut {
+      from { opacity: 1; transform: translateX(0); }
+      to   { opacity: 0; transform: translateX(20px); }
     }
 
     /* ── 顶栏 ─────────────────────────────────────────────── */
@@ -38,17 +83,12 @@
       position: sticky;
       top: 0;
       background: var(--paper);
+      z-index: 10;
     }
-    header h1 {
-      font-size: 16px;
-      font-weight: 600;
-      color: var(--ink-900);
-    }
+    header h1 { font-size: 16px; font-weight: 600; color: var(--ink-900); }
     header .badge {
-      font-size: 11px;
-      padding: 2px 8px;
-      background: var(--accent);
-      color: #fff;
+      font-size: 11px; padding: 2px 8px;
+      background: var(--accent); color: #fff;
       border-radius: 10px;
     }
     .header-right { margin-left: auto; display: flex; gap: 12px; align-items: center; }
@@ -58,7 +98,6 @@
     main {
       display: grid;
       grid-template-columns: 1fr 1fr;
-      gap: 0;
       height: calc(100vh - 56px);
     }
 
@@ -73,19 +112,40 @@
     /* 拖拽上传区 */
     .upload-zone {
       margin: 24px;
-      padding: 40px 24px;
+      padding: 36px 24px;
       border: 2px dashed var(--border);
-      border-radius: 12px;
+      border-radius: var(--radius-lg);
       text-align: center;
       cursor: pointer;
-      transition: border-color 0.2s, background 0.2s;
+      transition: border-color 0.2s, background 0.2s, transform 0.15s, box-shadow 0.15s;
+      position: relative;
     }
     .upload-zone:hover, .upload-zone.drag-over {
       border-color: var(--accent);
       background: rgba(196, 75, 58, 0.04);
+      transform: translateY(-1px);
+      box-shadow: var(--shadow);
     }
+    .upload-zone:active { transform: scale(0.99); }
     .upload-zone p { color: var(--ink-500); font-size: 14px; }
-    .upload-zone .hint { font-size: 12px; margin-top: 4px; color: var(--ink-500); opacity: 0.7; }
+    .upload-zone .hint { font-size: 12px; margin-top: 4px; color: var(--ink-400); }
+
+    /* 上传区 loading 态 */
+    .upload-zone.uploading {
+      pointer-events: none;
+      border-color: var(--success);
+      background: rgba(58, 107, 196, 0.04);
+    }
+    .upload-zone.uploading p { color: var(--success); }
+    .upload-spinner {
+      width: 28px; height: 28px;
+      border: 3px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      margin: 0 auto 10px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
 
     /* 论文列表 */
     .paper-list { flex: 1; overflow-y: auto; padding: 0 24px 24px; }
@@ -96,256 +156,259 @@
       color: var(--ink-500);
       margin-bottom: 12px;
     }
+
+    /* 空状态 */
+    .empty-state {
+      text-align: center;
+      padding: 32px 16px;
+      color: var(--ink-400);
+    }
+    .empty-state .empty-icon { font-size: 40px; margin-bottom: 12px; opacity: 0.6; }
+    .empty-state .empty-title { font-size: 14px; font-weight: 500; color: var(--ink-500); margin-bottom: 6px; }
+    .empty-state .empty-desc { font-size: 12px; color: var(--ink-400); line-height: 1.5; }
+
+    /* 论文卡片 */
     .paper-item {
       padding: 12px;
-      border-radius: 8px;
+      border-radius: var(--radius-md);
       border: 1px solid var(--border);
       margin-bottom: 8px;
       cursor: pointer;
-      transition: box-shadow 0.15s;
+      transition: box-shadow 0.18s, transform 0.18s, border-color 0.18s;
       display: flex;
       align-items: flex-start;
       gap: 8px;
     }
-    .paper-item:hover { box-shadow: var(--shadow); }
+    .paper-item:hover {
+      box-shadow: var(--shadow-hover);
+      transform: translateY(-1px);
+      border-color: rgba(196, 75, 58, 0.3);
+    }
     .paper-item .paper-body { flex: 1; min-width: 0; }
     .paper-item .title { font-size: 14px; font-weight: 500; color: var(--ink-900); }
     .paper-item .meta { font-size: 12px; color: var(--ink-500); margin-top: 4px; }
     .paper-item .status {
-      display: inline-block;
-      font-size: 11px;
-      padding: 1px 6px;
-      border-radius: 4px;
-      margin-top: 6px;
+      display: inline-block; font-size: 11px;
+      padding: 1px 6px; border-radius: 4px; margin-top: 6px;
     }
+
+    /* 删除按钮 */
     .paper-item .delete-btn {
       opacity: 0;
-      background: none;
-      border: none;
-      cursor: pointer;
-      font-size: 16px;
-      color: var(--ink-400);
-      padding: 4px 6px;
-      border-radius: 4px;
-      flex-shrink: 0;
-      transition: opacity 0.15s, color 0.15s;
-      line-height: 1;
+      background: none; border: none; cursor: pointer;
+      font-size: 15px; color: var(--ink-400);
+      padding: 4px 6px; border-radius: var(--radius-sm);
+      flex-shrink: 0; align-self: center;
+      transition: opacity 0.15s, color 0.15s, background 0.15s;
     }
     .paper-item:hover .delete-btn { opacity: 1; }
-    .paper-item .delete-btn:hover { color: var(--danger); background: rgba(220,50,50,0.08); }
+    .paper-item .delete-btn:hover { color: var(--danger); background: rgba(217,54,54,0.08); }
+
     .status.ready       { background: rgba(58,107,196,0.12); color: var(--success); }
     .status.processing  { background: rgba(196,75,58,0.12); color: var(--accent); }
-    .status.error       { background: rgba(155,58,196,0.12); color: var(--danger); }
+    .status.error       { background: rgba(217,54,54,0.12); color: var(--danger); }
 
     /* 进度条 */
     .progress-bar-wrap {
-      margin: 8px 0 0;
-      background: #eee;
-      border-radius: 6px;
-      height: 6px;
-      overflow: hidden;
+      margin: 8px 0 0; background: #eee;
+      border-radius: 6px; height: 5px; overflow: hidden;
     }
     .progress-bar-fill {
-      height: 100%;
-      background: var(--accent);
-      border-radius: 6px;
-      transition: width 0.3s ease;
-      width: 0%;
+      height: 100%; background: linear-gradient(90deg, var(--accent), #e05a3a);
+      border-radius: 6px; transition: width 0.35s ease; width: 0%;
     }
-    .progress-label {
-      font-size: 12px;
-      color: var(--ink-500);
-      margin-top: 4px;
-    }
+    .progress-label { font-size: 12px; color: var(--ink-500); margin-top: 4px; }
 
-    /* ── 右侧：RAG 问答 ─────────────────────────────────────── */
+    /* ── 右侧：RAG 问答 ─────────────────────────────────── */
     .panel-right {
-      display: flex;
-      flex-direction: column;
-      overflow: hidden;
-      background: #f5f4f2;
+      display: flex; flex-direction: column;
+      overflow: hidden; background: #f5f4f2;
     }
 
     /* Quota Banner */
     .quota-banner {
-      margin: 24px;
-      padding: 12px 16px;
-      background: white;
-      border-radius: 8px;
+      margin: 20px 24px 0;
+      padding: 10px 16px;
+      background: white; border-radius: var(--radius-md);
       border: 1px solid var(--border);
-      font-size: 13px;
-      display: flex;
-      gap: 12px;
-      align-items: center;
+      font-size: 13px; display: flex; gap: 12px; align-items: center;
     }
     .quota-banner .plan { font-weight: 600; color: var(--accent); }
-    .quota-banner .papers { color: var(--ink-500); }
+    .quota-banner .papers { color: var(--ink-500); margin-left: auto; }
 
     /* Chat 区域 */
     .chat-messages {
-      flex: 1;
-      overflow-y: auto;
-      padding: 0 24px 16px;
-      display: flex;
-      flex-direction: column;
-      gap: 16px;
+      flex: 1; overflow-y: auto;
+      padding: 16px 24px;
+      display: flex; flex-direction: column; gap: 14px;
     }
-    .msg { max-width: 85%; }
-    .msg.user { align-self: flex-end; }
-    .msg.assistant { align-self: flex-start; }
+    .msg { max-width: 85%; display: flex; flex-direction: column; gap: 4px; }
+    .msg.user { align-self: flex-end; align-items: flex-end; }
+    .msg.assistant { align-self: flex-start; align-items: flex-start; }
 
     .msg .bubble {
-      padding: 12px 16px;
-      border-radius: 12px;
-      font-size: 14px;
-      line-height: 1.6;
+      padding: 11px 15px; border-radius: 14px;
+      font-size: 14px; line-height: 1.65;
     }
     .msg.user .bubble {
-      background: var(--accent);
-      color: white;
+      background: var(--accent); color: white;
       border-bottom-right-radius: 4px;
+      transition: background 0.15s;
     }
+    .msg.user .bubble:hover { background: var(--accent-hover); }
     .msg.assistant .bubble {
-      background: white;
-      color: var(--ink-700);
+      background: white; color: var(--ink-700);
       border: 1px solid var(--border);
       border-bottom-left-radius: 4px;
     }
+    .msg.user .bubble { cursor: default; }
 
+    /* 引用 */
     .msg.assistant .citations {
-      margin-top: 8px;
-      padding-top: 8px;
+      padding-top: 8px; margin-top: 6px;
       border-top: 1px solid var(--border);
-      font-size: 12px;
-      color: var(--ink-500);
+      font-size: 12px; color: var(--ink-500);
     }
     .msg.assistant .citations .cite {
-      padding: 4px 8px;
-      background: #f0eeeb;
-      border-radius: 4px;
-      display: inline-block;
-      margin: 2px 4px 2px 0;
-      font-size: 11px;
+      padding: 3px 8px; background: #f0eeeb;
+      border-radius: 4px; display: inline-block;
+      margin: 2px 4px 2px 0; font-size: 11px;
+      color: var(--ink-500); transition: background 0.15s;
+    }
+    .msg.assistant .citations .cite:hover { background: #e8e6e3; }
+
+    /* 消息出现动画 */
+    @keyframes msgIn {
+      from { opacity: 0; transform: translateY(8px) scale(0.98); }
+      to   { opacity: 1; transform: translateY(0) scale(1); }
+    }
+    .msg { animation: msgIn 0.22s ease both; }
+
+    /* typing 动画 */
+    .typing-dots {
+      display: inline-flex; gap: 4px; align-items: center;
+      padding: 14px 16px; background: white;
+      border: 1px solid var(--border);
+      border-radius: 14px; border-bottom-left-radius: 4px;
+      width: fit-content;
+    }
+    .typing-dots span {
+      width: 6px; height: 6px; border-radius: 50%;
+      background: var(--ink-400); display: block;
+      animation: typingBounce 1.1s ease-in-out infinite;
+    }
+    .typing-dots span:nth-child(2) { animation-delay: 0.18s; }
+    .typing-dots span:nth-child(3) { animation-delay: 0.36s; }
+    @keyframes typingBounce {
+      0%, 60%, 100% { transform: translateY(0); }
+      30% { transform: translateY(-5px); }
     }
 
     /* Chat 输入 */
     .chat-input-area {
-      padding: 16px 24px 24px;
+      padding: 14px 24px 20px;
       background: #f5f4f2;
     }
-    .chat-input-row {
-      display: flex;
-      gap: 8px;
-      background: white;
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 8px 12px;
-      align-items: flex-end;
-    }
-    .chat-input-row textarea {
-      flex: 1;
-      border: none;
-      outline: none;
-      font-size: 14px;
-      font-family: inherit;
-      resize: none;
-      min-height: 24px;
-      max-height: 120px;
-      line-height: 1.5;
-    }
-    .btn-send {
-      width: 36px;
-      height: 36px;
-      border-radius: 8px;
-      background: var(--accent);
-      color: white;
-      border: none;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 16px;
-      transition: opacity 0.15s;
-      flex-shrink: 0;
-    }
-    .btn-send:disabled { opacity: 0.5; cursor: not-allowed; }
-
-    /* 聊天模式切换 */
     .chat-mode-row {
-      display: flex;
-      gap: 6px;
-      margin-bottom: 8px;
-      flex-wrap: wrap;
+      display: flex; gap: 6px; margin-bottom: 8px; flex-wrap: wrap;
     }
     .mode-btn {
-      padding: 5px 12px;
-      border-radius: 16px;
-      border: 1px solid var(--border);
-      background: white;
-      color: var(--ink-500);
-      font-size: 12px;
-      cursor: pointer;
+      padding: 5px 12px; border-radius: 20px;
+      border: 1px solid var(--border); background: white;
+      color: var(--ink-500); font-size: 12px; cursor: pointer;
       transition: all 0.15s;
     }
     .mode-btn:hover { border-color: var(--accent); color: var(--accent); }
-    .mode-btn.active {
-      background: var(--accent);
-      color: white;
+    .mode-btn.active { background: var(--accent); color: white; border-color: var(--accent); }
+
+    .chat-input-row {
+      display: flex; gap: 8px;
+      background: white; border: 1.5px solid var(--border);
+      border-radius: 12px; padding: 8px 12px;
+      align-items: flex-end;
+      transition: border-color 0.18s, box-shadow 0.18s;
+    }
+    .chat-input-row:focus-within {
       border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(196, 75, 58, 0.1);
     }
-    .msg .mode-badge {
-      font-size: 11px;
-      padding: 2px 8px;
-      border-radius: 10px;
-      display: inline-block;
-      margin-bottom: 6px;
+    .chat-input-row textarea {
+      flex: 1; border: none; outline: none;
+      font-size: 14px; font-family: inherit;
+      resize: none; min-height: 24px; max-height: 120px;
+      line-height: 1.5; background: transparent;
+      color: var(--ink-700);
     }
-    .mode-badge.default  { background: rgba(58,107,196,0.12); color: var(--success); }
-    .mode-badge.methodology { background: rgba(196,107,58,0.12); color: #c46a3a; }
-    .mode-badge.survey   { background: rgba(58,107,58,0.12); color: #3a7a3a; }
+    .chat-input-row textarea::placeholder { color: var(--ink-400); }
+
+    /* 发送按钮 */
+    .btn-send {
+      width: 36px; height: 36px; border-radius: var(--radius-sm);
+      background: var(--accent); color: white; border: none;
+      cursor: pointer; display: flex; align-items: center;
+      justify-content: center; font-size: 16px;
+      transition: background 0.15s, transform 0.1s, opacity 0.15s;
+      flex-shrink: 0; position: relative;
+    }
+    .btn-send:hover:not(:disabled) { background: var(--accent-hover); }
+    .btn-send:active:not(:disabled) { transform: scale(0.94); }
+    .btn-send:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    /* 发送按钮 loading */
+    .btn-send .spinner {
+      width: 16px; height: 16px;
+      border: 2px solid rgba(255,255,255,0.4);
+      border-top-color: white;
+      border-radius: 50%;
+      animation: spin 0.65s linear infinite;
+      display: none;
+    }
+    .btn-send.loading .spinner { display: block; }
+    .btn-send.loading .btn-icon { display: none; }
+
+    /* 模式徽章 */
+    .mode-badge {
+      font-size: 11px; padding: 2px 8px;
+      border-radius: 10px; display: inline-block; margin-bottom: 4px;
+    }
+    .mode-badge.default      { background: rgba(58,107,196,0.12); color: var(--success); }
+    .mode-badge.methodology  { background: rgba(196,107,58,0.12); color: #c46a3a; }
+    .mode-badge.survey       { background: rgba(58,107,58,0.12); color: #3a7a3a; }
 
     /* ── Auth 表单 ──────────────────────────────────────────── */
     #auth-screen {
       position: fixed; inset: 0;
       background: var(--paper);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      z-index: 100;
+      display: flex; align-items: center; justify-content: center; z-index: 100;
     }
     .auth-card {
-      width: 360px;
-      background: white;
-      border: 1px solid var(--border);
-      border-radius: 16px;
-      padding: 40px;
-      box-shadow: 0 4px 24px rgba(0,0,0,0.08);
+      width: 360px; background: white;
+      border: 1px solid var(--border); border-radius: var(--radius-lg);
+      padding: 40px; box-shadow: 0 4px 24px rgba(0,0,0,0.08);
     }
-    .auth-card h2 { font-size: 20px; color: var(--ink-900); margin-bottom: 8px; }
+    .auth-card h2 { font-size: 20px; color: var(--ink-900); margin-bottom: 6px; }
     .auth-card p  { font-size: 13px; color: var(--ink-500); margin-bottom: 24px; }
     .auth-card input {
       width: 100%; padding: 10px 14px;
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      font-size: 14px;
-      font-family: inherit;
-      margin-bottom: 12px;
-      outline: none;
-      transition: border-color 0.15s;
+      border: 1.5px solid var(--border); border-radius: var(--radius-sm);
+      font-size: 14px; font-family: inherit;
+      margin-bottom: 12px; outline: none;
+      transition: border-color 0.15s, box-shadow 0.15s;
     }
-    .auth-card input:focus { border-color: var(--accent); }
+    .auth-card input:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(196, 75, 58, 0.1);
+    }
     .auth-card .btn-primary {
       width: 100%; padding: 11px;
-      background: var(--accent);
-      color: white;
-      border: none;
-      border-radius: 8px;
-      font-size: 14px;
-      font-weight: 600;
-      cursor: pointer;
-      margin-top: 4px;
+      background: var(--accent); color: white; border: none;
+      border-radius: var(--radius-sm);
+      font-size: 14px; font-weight: 600; cursor: pointer;
+      margin-top: 4px; transition: background 0.15s, transform 0.1s;
     }
-    .auth-card .btn-primary:hover { opacity: 0.9; }
+    .auth-card .btn-primary:hover { background: var(--accent-hover); }
+    .auth-card .btn-primary:active { transform: scale(0.99); }
+    .auth-card .btn-primary:disabled { opacity: 0.6; cursor: not-allowed; }
     .auth-card .toggle {
       text-align: center; margin-top: 16px;
       font-size: 13px; color: var(--ink-500);
@@ -354,16 +417,18 @@
 
     /* ── 工具函数 ────────────────────────────────────────────── */
     .hidden { display: none !important; }
-    .loading { opacity: 0.6; pointer-events: none; }
     .error-msg { color: var(--danger); font-size: 13px; margin-top: 8px; text-align: center; }
   </style>
 </head>
 <body>
 
-<!-- ── Auth 登录/注册 ──────────────────────────────────── -->
+<!-- ── Toast 通知 ──────────────────────────────────── -->
+<div id="toast-container"></div>
+
+<!-- ── Auth 登录/注册 ──────────────────────────────── -->
 <div id="auth-screen">
   <div class="auth-card">
-    <h2>RAG 学术知识库</h2>
+    <h2>📚 RAG 学术知识库</h2>
     <p>Phase 0 验证 · 请登录或注册</p>
     <div id="auth-error" class="error-msg hidden"></div>
     <input id="email-input"    type="email"    placeholder="邮箱地址" autocomplete="email" />
@@ -388,13 +453,13 @@
     <!-- 左侧：上传 + 列表 -->
     <div class="panel-left">
       <div class="upload-zone" id="upload-zone">
-        <p>📄 拖拽 PDF 到这里，或点击选择文件</p>
+        <div class="upload-spinner" id="upload-spinner" style="display:none"></div>
+        <p id="upload-zone-text">📄 拖拽 PDF 到这里，或点击选择文件</p>
         <p class="hint">仅支持 PDF · 免费用户上限 20 篇</p>
         <input type="file" id="file-input" accept=".pdf" style="display:none" />
       </div>
-      <div id="upload-status" style="padding:0 24px;font-size:13px;color:var(--ink-500);"></div>
       <div id="upload-progress" style="padding:0 24px 8px;font-size:12px;display:none">
-        <div id="progress-label">准备中…</div>
+        <div id="progress-label" style="color:var(--ink-500);margin-bottom:4px;">准备中…</div>
         <div class="progress-bar-wrap"><div class="progress-bar-fill" id="progress-fill"></div></div>
       </div>
       <div class="paper-list">
@@ -418,15 +483,17 @@
         </div>
       </div>
       <div class="chat-input-area">
-        <!-- 模式切换 -->
         <div class="chat-mode-row" id="chat-mode-row">
           <button class="mode-btn active" data-mode="default" onclick="setChatMode('default')">💬 默认问答</button>
           <button class="mode-btn" data-mode="methodology" onclick="setChatMode('methodology')">🔬 方法论审计</button>
           <button class="mode-btn" data-mode="survey" onclick="setChatMode('survey')">📝 文献综述</button>
         </div>
         <div class="chat-input-row">
-          <textarea id="chat-input" rows="1" placeholder="问我关于你论文库的任何问题…"></textarea>
-          <button class="btn-send" id="btn-send" title="发送">↑</button>
+          <textarea id="chat-input" rows="1" placeholder="问我关于你论文库的任何问题…" ></textarea>
+          <button class="btn-send" id="btn-send" title="发送">
+            <span class="btn-icon">↑</span>
+            <span class="spinner"></span>
+          </button>
         </div>
         <div id="chat-error" class="error-msg hidden"></div>
       </div>
@@ -442,12 +509,26 @@
   let collectionName = localStorage.getItem('collection') || '';
   let plan = localStorage.getItem('plan') || 'free';
   let uploading = false;
-  let chatMode = 'default';  // 'default' | 'methodology' | 'survey'
+  let sending = false;
+  let chatMode = 'default';
 
-  /* ── API 基础 ──────────────────────────────────────────── */
-  // Phase 0: 走 nginx 反代（公司网络无法直连 8000）
   const API = 'http://124.156.204.163:8080';
 
+  /* ── Toast 通知系统 ─────────────────────────────────── */
+  function showToast(msg, type = 'info', duration = 3500) {
+    const container = document.getElementById('toast-container');
+    const toast = document.createElement('div');
+    toast.className = `toast ${type}`;
+    const icon = type === 'success' ? '✅' : type === 'error' ? '❌' : type === 'warning' ? '⚠️' : 'ℹ️';
+    toast.innerHTML = `<span>${icon}</span><span>${msg}</span>`;
+    container.appendChild(toast);
+    setTimeout(() => {
+      toast.classList.add('fade-out');
+      setTimeout(() => toast.remove(), 320);
+    }, duration);
+  }
+
+  /* ── API 基础 ──────────────────────────────────────────── */
   async function api(method, path, body, noAuth) {
     const headers = { 'Content-Type': 'application/json' };
     if (!noAuth) headers['Authorization'] = `Bearer ${token}`;
@@ -456,15 +537,18 @@
     const r = await fetch(API + path, opts);
     let data;
     try {
-        data = await r.json();
+      data = await r.json();
     } catch {
-        throw new Error(`HTTP ${r.status} — 响应解析失败`);
+      const err = `HTTP ${r.status} — 服务器响应格式错误`;
+      console.error('[API Error]', method, path, err);
+      throw new Error(err);
     }
     if (!r.ok) {
-        const msg = Array.isArray(data.detail)
-          ? data.detail.map(e => e.msg || JSON.stringify(e)).join(', ')
-          : (data.detail || `HTTP ${r.status}`);
-        throw new Error(msg);
+      const msg = Array.isArray(data.detail)
+        ? data.detail.map(e => e.msg || JSON.stringify(e)).join(', ')
+        : (data.detail || `HTTP ${r.status}`);
+      console.error('[API Error]', method, path, msg);
+      throw new Error(msg);
     }
     return data;
   }
@@ -483,184 +567,168 @@
     localStorage.clear();
     document.getElementById('auth-screen').classList.remove('hidden');
     document.getElementById('app').classList.add('hidden');
+    document.getElementById('chat-messages').innerHTML = `
+      <div class="msg assistant">
+        <div class="bubble">
+          👋 欢迎！上传你的第一篇论文，然后在这里问我任何问题。<br/><br/>
+          例如：「这篇论文的核心结论是什么？」「作者用了什么方法？」
+        </div>
+      </div>`;
   }
 
   document.getElementById('btn-login').onclick = async () => {
-    const email = document.getElementById('email-input').value;
+    const email = document.getElementById('email-input').value.trim();
     const pw = document.getElementById('password-input').value;
-    const err = document.getElementById('auth-error');
-    err.classList.add('hidden');
+    const errEl = document.getElementById('auth-error');
+    const btn = document.getElementById('btn-login');
+    errEl.classList.add('hidden');
+    if (!email || !pw) { errEl.textContent = '请填写邮箱和密码'; errEl.classList.remove('hidden'); return; }
+    btn.disabled = true;
+    btn.textContent = '登录中…';
     try {
       const data = await api('POST', '/auth/login', { email, password: pw }, true);
       token = data.access_token;
-      // 重新获取用户信息
       const meResp = await api('GET', '/me/quota');
       userEmail = email;
+      plan = meResp.plan || 'free';
+      collectionName = meResp.collection || '';
       localStorage.setItem('token', token);
       localStorage.setItem('email', email);
-      localStorage.setItem('collection', data.collection || '');
-      // collection 从 login 响应或后续调用获取
-      // Phase 0 简单处理：存 email 做识别
-      showApp();
-    } catch(e) {
-      err.textContent = e.message;
-      err.classList.remove('hidden');
-    }
-  };
-
-  // 简化：注册后自动登录
-  document.getElementById('btn-show-register').onclick = async () => {
-    const email = document.getElementById('email-input').value;
-    const pw = document.getElementById('password-input').value;
-    const err = document.getElementById('auth-error');
-    err.classList.add('hidden');
-    try {
-      await api('POST', '/auth/register', { email, password: pw }, true);
-      document.getElementById('btn-login').click();
-    } catch(e) {
-      err.textContent = e.message;
-      err.classList.remove('hidden');
-    }
-  };
-
-  // 启动时检查 token（不预填，过期 token 会导致 API 401）
-  async function validateAndResumeToken() {
-    const savedToken = localStorage.getItem('token');
-    if (!savedToken) return;
-    try {
-      // 检查 JWT 是否过期（前端解码 exp）
-      const parts = savedToken.split('.');
-      if (parts.length !== 3) throw new Error('Malformed token');
-      const payload = JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')));
-      if (payload.exp && Date.now() / 1000 > payload.exp) throw new Error('Token expired');
-      // 用这个 token 调 /me/quota 验证它是否在 backend 仍有效
-      const data = await api('GET', '/me/quota');
-      token = savedToken;
-      userEmail = localStorage.getItem('email') || '';
-      collectionName = data.collection || '';
+      localStorage.setItem('plan', plan);
       localStorage.setItem('collection', collectionName);
       showApp();
+      showToast('登录成功', 'success');
     } catch(e) {
-      // token 无效或过期：清除本地状态，让用户重新登录
-      localStorage.removeItem('token');
-      localStorage.removeItem('email');
-      localStorage.removeItem('userId');
-      localStorage.removeItem('collection');
-      localStorage.removeItem('plan');
+      errEl.textContent = e.message;
+      errEl.classList.remove('hidden');
+      btn.disabled = false;
+      btn.textContent = '登录';
     }
-  }
-  validateAndResumeToken();
+  };
 
-  /* ── 文件上传 ──────────────────────────────────────────── */
+  document.getElementById('btn-show-register').onclick = async () => {
+    const email = document.getElementById('email-input').value.trim();
+    const pw = document.getElementById('password-input').value;
+    const errEl = document.getElementById('auth-error');
+    const btn = document.getElementById('btn-login');
+    errEl.classList.add('hidden');
+    if (!email || !pw) { errEl.textContent = '请填写邮箱和密码'; errEl.classList.remove('hidden'); return; }
+    btn.disabled = true; btn.textContent = '注册中…';
+    try {
+      await api('POST', '/auth/register', { email, password: pw }, true);
+      btn.disabled = false; btn.textContent = '登录';
+      errEl.textContent = '注册成功，请登录';
+      errEl.style.color = 'var(--success)';
+      errEl.classList.remove('hidden');
+      document.getElementById('password-input').value = '';
+    } catch(e) {
+      errEl.textContent = e.message.includes('已注册') ? '该邮箱已注册，请直接登录' : e.message;
+      errEl.style.color = '';
+      errEl.classList.remove('hidden');
+      btn.disabled = false; btn.textContent = '登录';
+    }
+  };
+
+  // 回车登录
+  document.getElementById('password-input').onkeydown = e => { if (e.key === 'Enter') document.getElementById('btn-login').click(); };
+
+  /* ── 上传 ─────────────────────────────────────────────── */
   const uploadZone = document.getElementById('upload-zone');
   const fileInput  = document.getElementById('file-input');
 
-  uploadZone.onclick = () => fileInput.click();
-  uploadZone.ondragover = e => { e.preventDefault(); uploadZone.classList.add('drag-over'); };
-  uploadZone.ondragleave = () => uploadZone.classList.remove('drag-over');
-  uploadZone.ondrop = e => {
-    e.preventDefault();
-    uploadZone.classList.remove('drag-over');
-    const f = e.dataTransfer.files[0];
-    if (f) uploadFile(f);
-  };
-  fileInput.onchange = e => { if (e.target.files[0]) uploadFile(e.target.files[0]); };
-
-  async function uploadFile(file) {
+  uploadZone.addEventListener('click', () => { if (!uploading) fileInput.click(); });
+  uploadZone.addEventListener('dragover', e => { e.preventDefault(); uploadZone.classList.add('drag-over'); });
+  uploadZone.addEventListener('dragleave', () => uploadZone.classList.remove('drag-over'));
+  uploadZone.addEventListener('drop', e => {
+    e.preventDefault(); uploadZone.classList.remove('drag-over');
     if (uploading) return;
-    if (!file.name.endsWith('.pdf')) {
-      alert('只支持 PDF 文件');
-      return;
-    }
+    const f = e.dataTransfer.files[0];
+    if (f) handleFile(f);
+  });
+  fileInput.addEventListener('change', () => { if (fileInput.files[0]) handleFile(fileInput.files[0]); });
+
+  async function handleFile(file) {
+    if (!file.name.endsWith('.pdf')) { showToast('只支持 PDF 文件', 'error'); return; }
+    if (file.size > 50 * 1024 * 1024) { showToast('文件超过 50MB 限制', 'error'); return; }
     uploading = true;
-    const status = document.getElementById('upload-status');
-    const progressWrap = document.getElementById('upload-progress');
-    const progressLabel = document.getElementById('progress-label');
-    const progressFill = document.getElementById('progress-fill');
-    status.textContent = `⏳ 正在上传: ${file.name} …`;
-    progressWrap.style.display = 'block';
-    progressFill.style.width = '5%';
-    progressLabel.textContent = '上传中…';
+    const zone = document.getElementById('upload-zone');
+    const spinner = document.getElementById('upload-spinner');
+    const zoneText = document.getElementById('upload-zone-text');
+    spinner.style.display = 'block';
+    zone.classList.add('uploading');
+    zoneText.textContent = '正在上传…';
 
-    const formData = new FormData();
-    formData.append('file', file);
+    const progressDiv = document.getElementById('upload-progress');
+    const fill = document.getElementById('progress-fill');
+    const label = document.getElementById('progress-label');
+    progressDiv.style.display = 'block';
+    fill.style.width = '0%';
+    label.textContent = '上传中…';
 
-    let paperId = null;
-    let sseSource = null;
+    let sseEnded = false;
+    let uploadDone = false;
 
-    function connectSSE(pId) {
-      // 连接 SSE 接收实时进度
-      sseSource = new EventSource(`${API}/papers/${pId}/events`, {
-        withCredentials: false
-      });
-      sseSource.onmessage = (e) => {
-        const event = JSON.parse(e.data);
-        const stage = event.stage;
-        const pct = Math.round(event.progress * 100);
-        progressFill.style.width = pct + '%';
-
-        const stageLabels = {
-          parsing:    '解析 PDF…',
-          chunking:   '切分文本…',
-          embedding:  '生成向量…',
-          indexing:   '写入向量库…',
-          complete:   '索引完成！',
-          error:      `索引失败: ${event.error || '未知错误'}`,
-        };
-        progressLabel.textContent = stageLabels[stage] || stage || `进度 ${pct}%`;
-
-        if (stage === 'complete') {
-          progressFill.style.background = '#3a6bc4';
-          progressFill.style.width = '100%';
-          progressLabel.textContent = `✅ 已索引 ${event.chunks_count || 0} 个片段`;
-          // 局部更新论文列表中的状态
-          if (paperId) updatePaperStatus(paperId, 'ready', event.chunks_count);
-          if (sseSource) { sseSource.close(); sseSource = null; }
-          setTimeout(() => {
-            progressWrap.style.display = 'none';
-            progressFill.style.background = '';
-            loadQuota();
-          }, 3000);
-        } else if (stage === 'error') {
-          progressFill.style.background = '#9b3ac4';
-          if (sseSource) { sseSource.close(); sseSource = null; }
-        }
-      };
-      sseSource.onerror = () => {
-        // SSE 断开不影响主流程（轮询兜底）
-        if (sseSource) { sseSource.close(); sseSource = null; }
-      };
-    }
 
     try {
-      const resp = await fetch(API + '/papers/upload', {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${token}` },
-        body: formData,
+      // 用 fetch + SSE 进度
+      const xhr = new XMLHttpRequest();
+      const formData = new FormData();
+      formData.append('file', file);
+
+      await new Promise((resolve, reject) => {
+        xhr.upload.onprogress = e => {
+          if (e.lengthComputable) {
+            const pct = Math.round((e.loaded / e.total) * 40);
+            fill.style.width = pct + '%';
+            label.textContent = `上传中 ${pct}%`;
+          }
+        };
+        xhr.onload = () => {
+          if (xhr.status === 200 || xhr.status === 201) {
+            uploadDone = true;
+            fill.style.width = '100%';
+            label.textContent = '上传完成，正在处理…';
+            resolve();
+          } else {
+            try { const d = JSON.parse(xhr.responseText); reject(new Error(d.detail || `上传失败 HTTP ${xhr.status}`)); }
+            catch { reject(new Error(`上传失败 HTTP ${xhr.status}`)); }
+          }
+        };
+        xhr.onerror = () => reject(new Error('网络错误'));
+        xhr.open('POST', API + '/papers/upload');
+        xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+        xhr.send(formData);
       });
-      const data = await resp.json();
-      if (!resp.ok) throw new Error(data.detail || '上传失败');
-      paperId = data.paper_id;
-      status.textContent = `⏳ 已上传，正在索引: ${data.title || file.name} …`;
-      progressFill.style.width = '10%';
-      progressLabel.textContent = '等待索引队列…';
-      // 连接 SSE 接收实时进度
-      connectSSE(paperId);
+
+      showToast('上传成功，正在处理…', 'success');
+      loadPapers();
+      loadQuota();
+
     } catch(e) {
-      status.textContent = `❌ ${e.message}`;
-      progressWrap.style.display = 'none';
+      console.error('[Upload Error]', e);
+      showToast('上传失败：' + e.message, 'error');
     } finally {
       uploading = false;
+      spinner.style.display = 'none';
+      zone.classList.remove('uploading');
+      zoneText.textContent = '📄 拖拽 PDF 到这里，或点击选择文件';
+      progressDiv.style.display = 'none';
+      setTimeout(() => loadPapers(), 2000);
     }
   }
 
-  /* ── 论文列表 ──────────────────────────────────────────── */
+  /* ── 论文列表 ─────────────────────────────────────────── */
   async function loadPapers() {
     try {
       const papers = await api('GET', '/papers');
       const container = document.getElementById('papers-container');
-      if (!papers.length) {
-        container.innerHTML = '<p style="font-size:13px;color:var(--ink-500)">还没有上传论文</p>';
+      if (!papers || papers.length === 0) {
+        container.innerHTML = `
+          <div class="empty-state">
+            <div class="empty-icon">📚</div>
+            <div class="empty-title">还没有上传论文</div>
+            <div class="empty-desc">拖拽 PDF 到上方，或点击上传区域<br/>开始构建你的学术知识库</div>
+          </div>`;
         return;
       }
       container.innerHTML = papers.map(p => `
@@ -675,148 +743,134 @@
             }</span>
           </div>
           ${p.deletable ? `<button class="delete-btn" title="删除论文" onclick="event.stopPropagation(); confirmDelete('${p.paper_id}', ${JSON.stringify(p.title).replace(/'/g, "&#39;")})">🗑️</button>` : ''}
-        </div>
-      `).join('');
-    } catch(e) { console.error(e); }
+        </div>`).join('');
+    } catch(e) {
+      console.error('[LoadPapers Error]', e);
+    }
   }
 
-  /* ── 删除论文 ─────────────────────────────────────────── */
   async function confirmDelete(paperId, title) {
     if (!confirm(`确定删除论文 "${title}" 吗？\n\n删除后该论文的所有片段将从知识库中移除，且无法恢复。`)) return;
     try {
       await api('DELETE', `/papers/${paperId}`);
+      showToast('论文已删除', 'success');
       loadPapers();
       loadQuota();
     } catch(e) {
-      alert('删除失败: ' + e.message);
+      showToast('删除失败：' + e.message, 'error');
     }
   }
 
-  /* ── 配额显示 ──────────────────────────────────────────── */
+  /* ── 配额 ─────────────────────────────────────────── */
   async function loadQuota() {
     try {
-      const q = await api('GET', '/me/quota');
-      document.getElementById('plan-label').textContent = q.plan.toUpperCase();
-      document.getElementById('papers-label').textContent =
-        `已上传 ${q.papers_used}${q.papers_limit === Infinity ? ' 篇（无限）' : ' / ' + q.papers_limit + ' 篇'}`;
-      plan = q.plan;
-    } catch(e) {}
+      const me = await api('GET', '/me/quota');
+      plan = me.plan || 'free';
+      const used = me.papers_used || 0;
+      const limit = me.papers_limit;
+      document.getElementById('plan-label').textContent = plan === 'pro' ? 'Pro' : 'Free';
+      const limitTxt = limit ? `已上传 ${used} / ${limit} 篇` : `已上传 ${used} 篇`;
+      document.getElementById('papers-label').textContent = limitTxt;
+    } catch(e) { console.error('[LoadQuota Error]', e); }
   }
 
-  /* ── 聊天 ──────────────────────────────────────────────── */
-  const chatInput = document.getElementById('chat-input');
-  const btnSend   = document.getElementById('btn-send');
-  const chatEl    = document.getElementById('chat-messages');
-
+  /* ── 聊天模式 ─────────────────────────────────────────── */
   function setChatMode(mode) {
     chatMode = mode;
     document.querySelectorAll('.mode-btn').forEach(b => {
       b.classList.toggle('active', b.dataset.mode === mode);
     });
-    // Update placeholder based on mode
-    const placeholders = {
-      default: '问我关于你论文库的任何问题…',
-      methodology: '哪些论文用了实证模型？用了哪些数据？',
-      survey: '生成关于XX研究方向的文献综述…',
-    };
-    document.getElementById('chat-input').placeholder = placeholders[mode] || placeholders.default;
   }
 
-  async function sendMessage() {
-    const text = chatInput.value.trim();
-    if (!text) return;
-    if (plan === 'free') {
-      const err = document.getElementById('chat-error');
-      err.textContent = 'Free 用户不支持 RAG 问答，请升级到 Pro';
-      err.classList.remove('hidden');
-      return;
-    }
+  /* ── 发送消息 ─────────────────────────────────────────── */
+  document.getElementById('btn-send').onclick = sendMessage;
+  document.getElementById('chat-input').onkeydown = e => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+  };
 
-    // 添加用户消息
-    appendMsg('user', text);
-    chatInput.value = '';
+  async function sendMessage() {
+    if (sending) return;
+    const input = document.getElementById('chat-input');
+    const text = input.value.trim();
+    if (!text) return;
+
+    const btn = document.getElementById('btn-send');
     const errEl = document.getElementById('chat-error');
     errEl.classList.add('hidden');
 
-    // 发送请求
+    // 显示用户消息
+    const msgs = document.getElementById('chat-messages');
+    const userMsgEl = document.createElement('div');
+    userMsgEl.className = 'msg user';
+    userMsgEl.innerHTML = `<div class="bubble">${escapeHtml(text)}</div>`;
+    msgs.appendChild(userMsgEl);
+    input.value = '';
+    input.style.height = 'auto';
+
+    // typing 动画
+    const typingEl = document.createElement('div');
+    typingEl.className = 'msg assistant';
+    typingEl.innerHTML = `<div class="typing-dots"><span></span><span></span><span></span></div>`;
+    msgs.appendChild(typingEl);
+    msgs.scrollTop = msgs.scrollHeight;
+
+    sending = true;
+    btn.classList.add('loading');
+    btn.disabled = true;
+
     try {
       const data = await api('POST', '/chat', {
         question: text,
-        collection_name: collectionName || `user_${userId}`,
-        top_k: chatMode === 'survey' ? 8 : 8,
-        mode: chatMode,
+        collection_name: collectionName,
+        top_k: 8,
+        mode: chatMode
       });
-      appendMsg('assistant', data.answer, data.citations, chatMode, data.meta);
+
+      typingEl.remove();
+      const assistantEl = document.createElement('div');
+      assistantEl.className = 'msg assistant';
+
+      const modeLabel = chatMode === 'methodology' ? '🔬 方法论审计' : chatMode === 'survey' ? '📝 文献综述' : '';
+      const modeBadge = modeLabel ? `<span class="mode-badge ${chatMode}">${modeLabel}</span>` : '';
+      assistantEl.innerHTML = `
+        ${modeBadge}
+        <div class="bubble">${data.answer || '抱歉，未能生成回答'}</div>
+        ${data.citations && data.citations.length ? `
+          <div class="citations">
+            <div style="font-size:11px;color:var(--ink-400);margin-bottom:4px;">引用来源：</div>
+            ${data.citations.map(c => `<span class="cite">[${c.chunk_index + 1}] ${escapeHtml(c.content || '').substring(0, 60)}…</span>`).join('')}
+          </div>` : ''}`;
+
+      msgs.appendChild(assistantEl);
+      msgs.scrollTop = msgs.scrollHeight;
     } catch(e) {
+      typingEl.remove();
       errEl.textContent = e.message;
       errEl.classList.remove('hidden');
+      showToast('发送失败：' + e.message, 'error');
+    } finally {
+      sending = false;
+      btn.classList.remove('loading');
+      btn.disabled = false;
     }
   }
 
-  function appendMsg(role, text, citations, mode, meta) {
-    const div = document.createElement('div');
-    div.className = `msg ${role}`;
-    const modeLabel = { default: '', methodology: '🔬 方法论审计', survey: '📝 文献综述生成' };
-    let html = `<div class="bubble">`;
-    if (role === 'assistant' && mode && mode !== 'default') {
-      html += `<span class="mode-badge ${mode}">${modeLabel[mode] || mode}</span>`;
-    }
-    if (meta && meta.paper_count) {
-      html += `<div style="font-size:11px;color:var(--ink-500);margin-bottom:6px">涉及 ${meta.paper_count} 篇论文</div>`;
-    }
-    html += escapeHtml(text).replace(/\n/g, '<br/>');
-    if (role === 'assistant' && citations && citations.length) {
-      html += '<div class="citations"><strong>引用：</strong>';
-      citations.forEach((c, i) => {
-        html += `<span class="cite">片段${i+1} — 页${c.page_number || '?'}</span>`;
-      });
-      html += '</div>';
-    }
-    html += '</div>';
-    div.innerHTML = html;
-    chatEl.appendChild(div);
-    chatEl.scrollTop = chatEl.scrollHeight;
+  /* ── 工具函数 ─────────────────────────────────────────── */
+  function escapeHtml(str) {
+    if (!str) return '';
+    return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
 
-  btnSend.onclick = sendMessage;
-  chatInput.onkeydown = e => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      sendMessage();
-    }
-  };
-  chatInput.style.height = 'auto';
-  chatInput.style.height = chatInput.scrollHeight + 'px';
-  chatInput.oninput = () => {
-    chatInput.style.height = 'auto';
-    chatInput.style.height = Math.min(chatInput.scrollHeight, 120) + 'px';
-  };
-
-  /* ── 论文状态局部更新（SSE complete 时调用）─────────────── */
-  function updatePaperStatus(paperId, newStatus, chunksCount) {
-    const el = document.getElementById(`status-${paperId}`);
-    if (!el) return;
-    el.className = `status ${newStatus}`;
-    if (newStatus === 'ready') {
-      el.textContent = `✅ 已索引${chunksCount ? ' ' + chunksCount + ' 个片段' : ''}`;
-    } else if (newStatus === 'processing') {
-      el.textContent = '⏳ 索引中';
-    } else if (newStatus === 'error') {
-      el.textContent = '❌ 失败';
-    }
-    // 更新 meta 字段
-    const item = el.closest('.paper-item');
-    if (item) {
-      const meta = item.querySelector('.meta');
-      if (meta && chunksCount) meta.textContent = chunksCount + ' 个片段';
-    }
-  }
-
-  /* ── 工具 ──────────────────────────────────────────────── */
-  function escapeHtml(s) {
-    const d = document.createElement('div');
-    d.textContent = s;
-    return d.innerHTML;
+  /* ── 启动检查 ─────────────────────────────────────────── */
+  if (token) {
+    api('GET', '/me/quota').then(me => {
+      userEmail = localStorage.getItem('email') || '';
+      plan = me.plan || 'free';
+      collectionName = me.collection || '';
+      showApp();
+    }).catch(() => {
+      logout();
+    });
   }
 </script>
 </body>
