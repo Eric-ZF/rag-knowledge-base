@@ -36,11 +36,22 @@ except RuntimeError as e:
 init_papers()
 users_db, users_by_email = init_users()
 
-# ─── Embedding 模型预加载（启动时而非第一次请求时加载）─
-print("📥 预加载 Embedding 模型...")
-from pipeline import get_embedding_model
-_ = get_embedding_model()  # 触发单例加载，消除第一次请求延迟
-print("✅ Embedding 模型就绪")
+# ─── Lifespan：启动时预加载 embedding 模型 ─────────────────
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # 写启动标记，watchdog 据此判断是否在 startup 中
+    Path("/tmp/backend_starting").write_text("1")
+    print("📥 预加载 Embedding 模型...")
+    from pipeline import get_embedding_model
+    _ = get_embedding_model()
+    Path("/tmp/backend_starting").write_text("0")  # startup 完成
+    print("✅ Embedding 模型就绪，uvicorn 开始接受请求")
+    yield
+    # shutdown 清理（暂无）
+    Path("/tmp/backend_starting").write_text("0")
 
 # ─── SSE 索引进度（全局事件总线）────────────────────
 # paper_id → {"stage": str, "progress": float, "chunks_count": int|None, "error": str|None}
@@ -50,8 +61,10 @@ processing_events: dict[str, dict] = {}
 app = FastAPI(
     title="RAG 学术知识库 — Phase 0.6",
     version="0.6.0",
-    debug=os.getenv("DEBUG", "true").lower() == "true",
+    lifespan=lifespan,
 )
+
+
 
 app.add_middleware(
     CORSMiddleware,
