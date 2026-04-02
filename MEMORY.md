@@ -6,13 +6,19 @@
 - **登录**: bosstest@boss.io / BossPhase0（pro 账号）
 - **偏好**: 直接给结论，不要过多询问
 
-## RAG 学术知识库项目（Phase 0.6）
+## RAG 学术知识库项目（Phase 0.7）
 - **项目路径**: `/root/.openclaw/workspace/rag-knowledge-base/phase0/`
 - **后端**: FastAPI on :8000，start_backend.py 启动
-- **前端**: http.server on :8080
-- **向量库**: ChromaDB at /root/.openclaw/rag-data/chromadb/
+- **前端**: nginx on :80+:8080，静态文件 + API 反代
+- **向量库**: ChromaDB at /tmp/chromadb/（⚠️ 注意！不是 /root/.openclaw/rag-data/chromadb/）
 - **持久化**: papers_db.json + users_db.json at /root/.openclaw/rag-data/
-- **当前 collection**: user_1d2a4dc3_550f_4f89_b97b_2b057705381c（bosstest 用户）
+- **当前 collection**: user_1d2a4dc3_550f_4f89_b97b_2b057705381
+
+### 当前论文（2026-04-02 修复后）
+- `76046662` EU CBAM EN版（22 chunks）✅
+- `00b1336d` 阮建平/黄辉平「规范性力量」（22 chunks）✅
+- `8e707ffe` 制造业碳排放（15 chunks）✅
+- **已删除 phantom**: `2fd0a101`（papers_db 有记录，ChromaDB 无数据）
 
 ### 已修复的 RAG 质量问题（2026-03-31）
 - chunk_size: 800→2000, overlap: 80→200
@@ -25,18 +31,25 @@
 ### Phase 0.6 持久化（2026-04-01）
 - papers_db → /root/.openclaw/rag-data/papers_db.json（每次写入自动落盘）
 - users_db → /root/.openclaw/rag-data/users_db.json
-- start_backend.py 简化：无需手动注入，数据自动从 JSON 恢复
+
+### Phase 0.7 论文池管理（2026-04-02）
+- GET /papers 实时查 ChromaDB chunk 数量（解决 papers_db 不同步）
+- POST /papers/upload SHA256 去重（相同内容拒绝重复上传）
+- DELETE /papers/{id} ChromaDB + papers_db 双删
+- 前端论文列表 hover 删除按钮，二次确认
+- papers_db 清理 phantom entries
+- nginx 接管 8080，CORS headers 强制追加
 
 ### ⚠️ 重要约束
-- **Embedding 模型冲突**：ChromaDB 历史 chunks 用 text2vec(384d)，当前 BGE(1024d)，重建索引前不要混用
-- **全角/半角归一化**：PDF文本用全角（ＣＢＡＭ），必须在关键词匹配前归一化
-- **demo.html API URL**: http://124.156.204.163:8000
-- **index.html API URL**: http://124.156.204.163:8000（两个文件要同步更新）
+- **前端 API URL**: `http://124.156.204.163:8080`（必须显式带端口！nginx 监听 80+8080）
+- **ChromaDB 数据目录**: /tmp/chromadb（重启丢失！⚠️ 待迁移到持久化目录）
+- **Embedding 模型冲突**: ChromaDB 历史 chunks 用 text2vec(384d)，当前 BGE(1024d)，重建索引前不要混用
+- **全角/半角归一化**: PDF文本用全角（ＣＢＡＭ），必须在关键词匹配前归一化
 
 ### MiniMax API 配置
 - Chat: `https://api.minimax.chat/v1/chat/completions`
 - Auth: `Authorization: Bearer {api_key}` + `GroupId: {group_id}`
-- Models: MiniMax-M2.7（推荐）, MiniMax-M2, MiniMax-Text-01
+- Models: MiniMax-M2.7（推荐）, MiniMax-Text-01
 - Group ID: 2029536159561945747
 
 ## 关键模式（Semantic Patterns）
@@ -62,3 +75,10 @@
 8. **ChromaDB papers_db 不同步导致 phantom entries：** ChromaDB 有数据但 papers_db 丢失 → RAG 返回空；papers_db 有记录但 ChromaDB 无数据 → phantom
 9. **Embedding 模型切换导致维度冲突：** text2vec(384d) → BGE(1024d) 切换后旧 chunks 无法检索，需重建索引
 10. **JSON 持久化用 os.replace 原子替换：** 先写 .tmp 再 rename，防止写入中断导致文件损坏
+
+## 今日教训（2026-04-02）
+1. **nginx 只监 8080，前端 API URL 无端口 → 连接超时：** `http://124.156.204.163` 默认走 port 80，没人监听，永远超时。解决：前端显式带端口 `:8080`
+2. **浏览器缓存 HTML 是"登录没反应"的主要元凶：** Ctrl+Shift+R 强制刷新
+3. **ChromaDB count(where=...) 行为不稳定：** 用 `len(get(where=...)["ids"])` 更可靠
+4. **API URL 变更必须同步改三处：** index.html、demo.html、/var/www/rag/，缺一不可
+5. **「登录没反应」排障顺序**：Console（红色报错）→ Network（ERR_* 类型）→ r.json() 二次调用 → 连接超时

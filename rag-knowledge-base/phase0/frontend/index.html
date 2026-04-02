@@ -446,7 +446,7 @@
 
   /* ── API 基础 ──────────────────────────────────────────── */
   // Phase 0: 走 nginx 反代（公司网络无法直连 8000）
-  const API = 'http://124.156.204.163';
+  const API = 'http://124.156.204.163:8080';
 
   async function api(method, path, body, noAuth) {
     const headers = { 'Content-Type': 'application/json' };
