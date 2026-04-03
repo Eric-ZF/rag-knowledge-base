@@ -21,7 +21,7 @@ from config import validate_minimax_chat_config, MINIMAX_API_KEY, MINIMAX_GROUP_
 from data import (
     init_papers, init_users,
     get_paper, upsert_paper, update_paper, delete_paper,
-    get_user_papers,
+    get_user_papers, get_papers_db,
 )
 from pipeline import process_pdf, search_chunks
 from chat import generate_answer
@@ -481,9 +481,14 @@ async def chat(req: ChatRequest, user_info: tuple = Depends(get_current_user)):
 @app.get("/me/quota")
 async def my_quota(user_info: tuple = Depends(get_current_user)):
     _, user = user_info
+    # papers_used 只统计状态为 ready 的论文（索引成功才计入配额）
+    ready_count = sum(
+        1 for pid in user["papers"]
+        if get_paper(pid) and get_paper(pid).get("status") == "ready"
+    )
     return {
         "plan": user["plan"],
-        "papers_used": len(user["papers"]),
+        "papers_used": ready_count,
         "papers_limit": None if user["plan"] == "pro" else 20,
         "collection": user["collection"],
     }

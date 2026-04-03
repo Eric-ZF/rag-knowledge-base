@@ -194,15 +194,14 @@
 
     /* 删除按钮 */
     .paper-item .delete-btn {
-      opacity: 0;
+      opacity: 1;
       background: none; border: none; cursor: pointer;
       font-size: 15px; color: var(--ink-400);
       padding: 4px 6px; border-radius: var(--radius-sm);
       flex-shrink: 0; align-self: center;
       transition: opacity 0.15s, color 0.15s, background 0.15s;
     }
-    .paper-item:hover .delete-btn { opacity: 1; }
-    .paper-item .delete-btn:hover { color: var(--danger); background: rgba(217,54,54,0.08); }
+    .paper-item .delete-btn:hover { color: var(--danger); background: rgba(217,54,54,0.08); transform: scale(1.1); }
 
     .status.ready       { background: rgba(58,107,196,0.12); color: var(--success); }
     .status.processing  { background: rgba(196,75,58,0.12); color: var(--accent); }
@@ -731,7 +730,7 @@
           </div>`;
         return;
       }
-      container.innerHTML = papers.map(p => `
+      container.innerHTML = papers.filter(p => p.status === 'ready').map(p => `
         <div class="paper-item" data-paper-id="${p.paper_id}">
           <div class="paper-body">
             <div class="title">${escapeHtml(p.title)}</div>
