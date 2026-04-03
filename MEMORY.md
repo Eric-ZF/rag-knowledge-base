@@ -115,3 +115,9 @@
   - BGE-reranker-base 精排 Top20 候选
   - 融合：combined_score(60%) + CrossEncoder(40%)
   - 解决"向量相似但非正确答案"问题
+
+### 系统状态快照（2026-04-03 21:32 确认）
+- ChromaDB 真实目录：`/root/.openclaw/rag-data/chromadb`（已清空，0 collections）
+- /tmp/chromadb：不存在（已永久删除）
+- papers_db：`/root/.openclaw/rag-data/papers_db.json`（已清空，等待上传）
+- Backend 使用 config.py 的 CHROMADB_DIR，不再依赖环境变量
