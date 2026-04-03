@@ -685,9 +685,12 @@
         xhr.onload = () => {
           if (xhr.status === 200 || xhr.status === 201) {
             uploadDone = true;
-            fill.style.width = '100%';
-            label.textContent = '上传完成，正在处理…';
-            resolve();
+            fill.style.width = '40%'; // upload done, switch to SSE tracking
+            label.textContent = '上传完成，已开始索引…';
+            try {
+              const resp = JSON.parse(xhr.responseText);
+              resolve(resp.paper_id);
+            } catch { resolve(null); }
           } else {
             try { const d = JSON.parse(xhr.responseText); reject(new Error(d.detail || `上传失败 HTTP ${xhr.status}`)); }
             catch { reject(new Error(`上传失败 HTTP ${xhr.status}`)); }
@@ -699,20 +702,71 @@
         xhr.send(formData);
       });
 
-      showToast('上传成功，正在处理…', 'success');
-      loadPapers();
-      loadQuota();
+      // paper_id from upload response
+      const paperId = await uploadPromise;
+
+      // ── 轮询索进进度（40% → 100%，最多 5 分钟）─────────
+      if (paperId) {
+        let polls = 0;
+        const maxPolls = 60; // 最多 60 次（5 分钟）
+        const stageLabels = {
+          parsing: '正在解析 PDF…',
+          chunking: '正在切分内容…',
+          embedding: '正在生成向量…',
+          indexing: '正在存入向量库…',
+        };
+        function pollProgress() {
+          polls++;
+          api('GET', `/papers/${paperId}/status`).then(data => {
+            const status = data.status;
+            if (status === 'ready') {
+              fill.style.width = '100%';
+              label.textContent = '索引完成';
+              progressDiv.style.display = 'none';
+              showToast('论文索引完成', 'success');
+              loadPapers();
+              loadQuota();
+            } else if (status === 'error' || status === 'failed') {
+              progressDiv.style.display = 'none';
+              showToast('索引失败：' + (data.error || '未知错误'), 'error');
+              loadPapers();
+            } else {
+              // "processing" — 更新进度文字，继续轮询
+              const pct = Math.round(40 + (polls / maxPolls) * 58);
+              fill.style.width = pct + '%';
+              label.textContent = stageLabels[status] || `正在处理中… ${pct}%`;
+              if (polls < maxPolls) {
+                setTimeout(pollProgress, 5000);
+              } else {
+                progressDiv.style.display = 'none';
+                showToast('索引超时，请在论文列表查看状态', 'warning');
+                loadPapers();
+              }
+            }
+          }).catch(() => {
+            // 网络错误，继续轮询
+            if (polls < maxPolls) setTimeout(pollProgress, 5000);
+          });
+        }
+        label.textContent = '正在解析 PDF…';
+        setTimeout(pollProgress, 2000);
+      } else {
+        progressDiv.style.display = 'none';
+        showToast('上传成功', 'success');
+        loadPapers();
+        loadQuota();
+      }
 
     } catch(e) {
       console.error('[Upload Error]', e);
       showToast('上传失败：' + e.message, 'error');
+      progressDiv.style.display = 'none';
     } finally {
       uploading = false;
       spinner.style.display = 'none';
       zone.classList.remove('uploading');
       zoneText.textContent = '📄 拖拽 PDF 到这里，或点击选择文件';
-      progressDiv.style.display = 'none';
-      setTimeout(() => loadPapers(), 2000);
+      // progressDiv hidden by polling oncomplete/onerror
     }
   }
 
