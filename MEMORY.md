@@ -8,17 +8,24 @@
 
 ## RAG 学术知识库项目（Phase 0.7）
 - **项目路径**: `/root/.openclaw/workspace/rag-knowledge-base/phase0/`
-- **后端**: FastAPI on :8000，start_backend.py 启动
+- **后端**: FastAPI on :8000，`python3 /tmp/start_backend.py` 启动
 - **前端**: nginx on :80+:8080，静态文件 + API 反代
-- **向量库**: ChromaDB at /tmp/chromadb/（⚠️ 注意！不是 /root/.openclaw/rag-data/chromadb/）
+- **向量库**: ChromaDB at `/root/.openclaw/rag-data/chromadb/` ✅ 唯一正确目录
 - **持久化**: papers_db.json + users_db.json at /root/.openclaw/rag-data/
 - **当前 collection**: user_1d2a4dc3_550f_4f89_b97b_2b057705381
 
-### 当前论文（2026-04-02 修复后）
-- `76046662` EU CBAM EN版（22 chunks）✅
-- `00b1336d` 阮建平/黄辉平「规范性力量」（22 chunks）✅
-- `8e707ffe` 制造业碳排放（15 chunks）✅
-- **已删除 phantom**: `2fd0a101`（papers_db 有记录，ChromaDB 无数据）
+### ⚠️ 重要：ChromaDB 目录已纠正（2026-04-03）
+- **错误（已废弃）**: `/tmp/chromadb` — 2026-04-03 已永久删除，不再使用
+- **正确（唯一）**: `/root/.openclaw/rag-data/chromadb` — 持久化目录，重启不丢
+- config.py 中 `CHROMADB_DIR` 必须保持 `/root/.openclaw/rag-data/chromadb`
+
+### 当前论文状态（2026-04-03 重建后）
+- **ChromaDB: 0 chunks**（已清空，等待重新上传 PDF 重建索引）
+- **papers_db: 空**（用户保留，论文列表清空，等待重新上传）
+- 需要上传的 3 篇论文：
+  1. EU CBAM 英文版（纸质 PDF）
+  2. 阮建平/黄辉平「规范性力量」视角下欧盟碳边境调节机制的扩散与中国的因应（《德国研究》2025年第6期）
+  3. 制造业碳排放（黄赜琳）
 
 ### 已修复的 RAG 质量问题（2026-03-31）
 - chunk_size: 800→2000, overlap: 80→200
@@ -42,8 +49,8 @@
 
 ### ⚠️ 重要约束
 - **前端 API URL**: `http://124.156.204.163:8080`（必须显式带端口！nginx 监听 80+8080）
-- **ChromaDB 数据目录**: /tmp/chromadb（重启丢失！⚠️ 待迁移到持久化目录）
-- **Embedding 模型冲突**: ChromaDB 历史 chunks 用 text2vec(384d)，当前 BGE(1024d)，重建索引前不要混用
+- **ChromaDB 数据目录**: `/root/.openclaw/rag-data/chromadb`（✅ 唯一正确，持久化）
+- **Embedding 模型**: BGE(1024d) — 所有新建 chunks 必须用此模型
 - **全角/半角归一化**: PDF文本用全角（ＣＢＡＭ），必须在关键词匹配前归一化
 
 ### MiniMax API 配置
@@ -82,3 +89,9 @@
 3. **ChromaDB count(where=...) 行为不稳定：** 用 `len(get(where=...)["ids"])` 更可靠
 4. **API URL 变更必须同步改三处：** index.html、demo.html、/var/www/rag/，缺一不可
 5. **「登录没反应」排障顺序**：Console（红色报错）→ Network（ERR_* 类型）→ r.json() 二次调用 → 连接超时
+
+## 今日教训（2026-04-03）
+1. **ChromaDB 目录必须确认清楚再操作：** config.py 写 `/root/.openclaw/rag-data/chromadb`，但进程启动时环境变量 `CHROMADB_DIR=/tmp/chromadb`，两个目录都存在。以后操作 ChromaDB 前必须 `echo $CHROMADB_DIR` 确认
+2. **操作 /tmp/chromadb 不影响真实数据：** repair_chromadb.py 一直在修错误目录，真实数据在 `/root/.openclaw/rag-data/chromadb` 完好
+3. **papers_db 有两种格式：** `{paper_id: {...}}` vs `{user_id: {...}}`，写之前先 `cat` 看当前格式
+4. **不要在凌晨做不可逆数据操作** — 头脑不清醒，犯错概率翻倍
