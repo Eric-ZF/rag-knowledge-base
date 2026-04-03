@@ -3,7 +3,7 @@ Phase 0.6 — FastAPI 入口
 papers_db + users_db 全部持久化为 JSON，重启不丢失。
 """
 
-import os, re, uuid, json, asyncio
+import chromadb, os, re, uuid, json, asyncio
 from datetime import datetime
 from pathlib import Path
 from typing import Generator, Literal
@@ -240,14 +240,35 @@ async def upload_paper(
     finally:
         Path(tmp_check_path).unlink(missing_ok=True)
 
-    # 检查是否已上传过相同内容
+    # 检查是否已上传过相同内容（content_hash 精确匹配）
     existing = [
-        (pid, p["title"]) for pid, p in get_papers_db().items()
+        (pid, p) for pid, p in get_papers_db().items()
         if p.get("user_id") == user_id and p.get("content_hash") == content_hash
     ]
     if existing:
-        dup_pid, dup_title = existing[0]
-        raise HTTPException(409, f"该论文已上传过：'{dup_title}'（ID: {dup_pid[:8]}...），请勿重复上传")
+        dup_pid, dup_info = existing[0]
+        dup_title = dup_info.get("title", "")
+        dup_status = dup_info.get("status", "")
+        if dup_status in ("error", "failed", "ready"):
+            # 已有相同论文：若状态为 error/failed 则允许强制重新上传
+            if dup_status in ("error", "failed"):
+                print(f"[{dup_pid}] 检测到失败的论文记录，清除后重新上传...")
+                # 从用户列表移除
+                if dup_pid in user["papers"]:
+                    user["papers"].remove(dup_pid)
+                    users_db.save()
+                # 删除 ChromaDB chunks（如有）
+                try:
+                    col_del = client.get_collection(user["collection"])
+                    col_del.delete(ids=[mid for mid in col_del._collection.get()["ids"] if mid.startswith(dup_pid)])
+                except Exception:
+                    pass
+                # 删除 papers_db entry
+                delete_paper(dup_pid)
+            else:
+                raise HTTPException(409, f"该论文已上传过且索引成功：'{dup_title}'（ID: {dup_pid[:8]}...），请勿重复上传")
+        else:
+            raise HTTPException(409, f"该论文正在处理中，请稍后再试（ID: {dup_pid[:8]}）")
 
     paper_id = str(uuid.uuid4())
     title = file.filename.replace(".pdf", "").strip()
