@@ -104,3 +104,14 @@
 2. **操作 /tmp/chromadb 不影响真实数据：** repair_chromadb.py 一直在修错误目录，真实数据在 `/root/.openclaw/rag-data/chromadb` 完好
 3. **papers_db 有两种格式：** `{paper_id: {...}}` vs `{user_id: {...}}`，写之前先 `cat` 看当前格式
 4. **不要在凌晨做不可逆数据操作** — 头脑不清醒，犯错概率翻倍
+
+### Phase 0.7 P2 升级内容（2026-04-03 晚）
+- **PDF 原文定位**：
+  - PAPERS_DIR 持久化：`/root/.openclaw/rag-data/papers/`
+  - GET `/papers/{paper_id}/pdf` FileResponse 下载/预览
+  - 删除论文自动清理 PDF
+  - 前端引用可点击 → 新窗口打开 PDF 定位到 `#page=N`
+- **CrossEncoder 重排**：
+  - BGE-reranker-base 精排 Top20 候选
+  - 融合：combined_score(60%) + CrossEncoder(40%)
+  - 解决"向量相似但非正确答案"问题
