@@ -1,10 +1,12 @@
 """
-Phase 0：PDF → 分块 → 本地 Embedding → ChromaDB
+Phase 0.7+：PDF → Docling 结构化解析 → 两级 Chunk → BGE Embedding → ChromaDB
 
-Embedding: shibing624/text2vec-base-chinese（本地运行，零 API 成本）
-  - 768 维，中文语义效果好
-  - 首次运行自动下载模型（约 400MB）
-  - 之后从本地缓存加载
+Parsing: Docling 2.x（表格/公式/参考文献/页码全结构化）
+Embedding: BGE-large-zh-v1.5（1024维，本地运行）
+
+两级 Chunk 设计（学术 RAG 最佳实践）：
+  - Recall Chunk（召回块）：400-800 tokens，按语义段落切分，保证召回率
+  - Evidence Chunk（证据块）：150-350 tokens，按单段/结论/表格行切分，最小可引用单元
 """
 
 import hashlib
@@ -27,14 +29,10 @@ _embedding_model = None
 
 
 def get_embedding_model():
-    """
-    获取本地 Embedding 模型（单例）
-    shibing624/text2vec-base-chinese: 中文语义模型，768 维
-    首次下载后从本地缓存加载
-    """
+    """获取本地 Embedding 模型（单例，BGE-large-zh-v1.5, 1024维）"""
     global _embedding_model
     if _embedding_model is None:
-        print(f"📥 首次加载 Embedding 模型: {EMBEDDING_MODEL}（约 400MB，首次下载后缓存）")
+        print(f"📥 首次加载 Embedding 模型: {EMBEDDING_MODEL}（1024维，首次下载后缓存）")
         from sentence_transformers import SentenceTransformer
         _embedding_model = SentenceTransformer(EMBEDDING_MODEL)
         print(f"✅ 模型加载完成，向量维度: {EMBEDDING_DIM}")
@@ -43,82 +41,232 @@ def get_embedding_model():
 
 # ─── LangChain Embedding Wrapper ──────────────────────
 class LocalEmbeddingWrapper:
-    """
-    将 sentence-transformers 封装为 LangChain 兼容的 Embedding 接口
-    用于 Chroma 的 embedding_function 参数
-    """
+    """将 sentence-transformers 封装为 LangChain 兼容的 Embedding 接口"""
 
     def __init__(self):
         self.model = get_embedding_model()
         self.dim = self.model.get_sentence_embedding_dimension()
 
     def embed_query(self, text: str) -> list[float]:
-        """单条 query 嵌入（用于检索）"""
         vec = self.model.encode(text, normalize_embeddings=True)
         return vec.tolist()
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        """批量文档嵌入（用于索引）"""
         vecs = self.model.encode(texts, normalize_embeddings=True, show_progress_bar=False)
         return vecs.tolist()
 
     def __call__(self, text: str) -> list[float]:
-        """LangChain Chroma 直接调用时走 embed_query"""
         return self.embed_query(text)
 
 
-# ─── LangChain Chroma Embedding Function ─────────────
 def get_chroma_embedding_fn():
-    """返回 LangChain Chroma 所需的 embedding_function"""
     return LocalEmbeddingWrapper()
 
 
-# ─── PDF 解析 ──────────────────────────────────────────
-def parse_pdf(pdf_path: str) -> tuple[list[Document], str]:
+# ─── Docling PDF 解析 ──────────────────────────────────
+def parse_pdf_docling(pdf_path: str) -> tuple[list[Document], str]:
     """
-    使用 pdfplumber 按页提取文本，保留段落自然结构
-    同时返回 PDF 文本的 SHA256 哈希（用于去重检测）
-    """
-    import pdfplumber
-    from langchain_core.documents import Document
+    使用 Docling 2.x 解析 PDF，返回结构化 Documents + content hash。
 
-    all_docs = []
+    Docling 提取：
+    - 正文文本（按页+段落结构）
+    - 表格（Markdown 格式）
+    - 参考文献列表
+    - 页码 metadata
+
+    Returns:
+        documents: List[Document]，每个段落一个 Document
+        content_hash: PDF 全文 SHA256（用于去重检测）
+    """
+    from docling.document_converter import DocumentConverter
+    from docling.datamodel.base_models import InputFormat
+
+    converter = DocumentConverter()
+    result = converter.convert(source=pdf_path)
+
+    all_parts = []  # (text, metadata)
     full_text_parts = []
-    with pdfplumber.open(pdf_path) as pdf:
-        for page_num, page in enumerate(pdf.pages, start=1):
-            text = page.extract_text()
-            if text and text.strip():
-                all_docs.append(Document(
-                    page_content=text.strip(),
-                    metadata={"page_number": page_num}
-                ))
-                full_text_parts.append(text.strip())
 
-    # 内容去重哈希：基于全文文本（忽略格式差异）
+    # ── 1. 正文页面文本 ──────────────────────────────────
+    for page_num, page in enumerate(result.pages, start=1):
+        # Docling page.text 是该页所有段落的合并文本
+        page_text = page.text if hasattr(page, 'text') else ""
+        if not page_text or not page_text.strip():
+            continue
+
+        # 按空行分段（保留语义段落）
+        paragraphs = [p.strip() for p in page_text.split('\n\n') if p.strip()]
+        for para in paragraphs:
+            # 识别段落类型
+            section_type = _classify_section(para, page_num)
+            all_parts.append({
+                "text": para,
+                "page_number": page_num,
+                "section_type": section_type,
+                "source": "body",
+            })
+            full_text_parts.append(para)
+
+    # ── 2. 表格（Docling 结构化提取）─────────────────────
+    table_count = 0
+    for table_ix, table_node in enumerate(result.tables):
+        # table_node.table 是 List[List[str]]，转为 Markdown 表格
+        if hasattr(table_node, 'table') and table_node.table:
+            rows = table_node.table
+            if not rows:
+                continue
+            md_lines = []
+            for row in rows:
+                md_lines.append("| " + " | ".join(str(cell).strip() for cell in row) + " |")
+            md_table = "\n".join(md_lines)
+            table_count += 1
+            all_parts.append({
+                "text": f"[表格 {table_count}] {md_table}",
+                "page_number": table_node.provided.page or table_ix + 1,
+                "section_type": "table",
+                "source": "table",
+                "table_index": table_count,
+            })
+            full_text_parts.append(md_table)
+
+    # ── 3. 参考文献（从 metadata.refs 获取）──────────────
+    if hasattr(result, 'metadata') and hasattr(result.metadata, 'refs'):
+        refs = result.metadata.refs
+        if refs and hasattr(refs, 'biblio_entries'):
+            for ref_ix, (ref_key, ref_val) in enumerate(refs.biblio_entries.items()):
+                ref_text = ref_val.text if hasattr(ref_val, 'text') else str(ref_val)
+                if ref_text:
+                    all_parts.append({
+                        "text": f"[参考文献] {ref_text}",
+                        "page_number": 999,  # 参考文献通常在最后
+                        "section_type": "reference",
+                        "source": "reference",
+                        "ref_index": ref_ix + 1,
+                    })
+                    full_text_parts.append(ref_text)
+
+    # ── 4. 生成 Documents ───────────────────────────────
+    documents = []
+    for i, part in enumerate(all_parts):
+        documents.append(Document(
+            page_content=part["text"],
+            metadata={
+                "page_number": part["page_number"],
+                "section_type": part["section_type"],
+                "source": part["source"],
+                "chunk_index": i,
+                **{k: v for k, v in part.items()
+                   if k not in ("text", "page_number", "section_type", "source")},
+            }
+        ))
+
+    # ── 5. Content hash ─────────────────────────────────
     content_hash = hashlib.sha256(
         ("|||".join(full_text_parts)).encode("utf-8")
     ).hexdigest()
 
-    return all_docs, content_hash
+    return documents, content_hash
 
 
-# ─── 分块 ─────────────────────────────────────────────
-def chunk_documents(documents: list[Document], chunk_size: int = 2000) -> list[Document]:
+def _classify_section(text: str, page_num: int) -> str:
     """
-    将 LangChain Documents 分块
-    chunk_size=2000 字（中文，约 1000 tokens），学术论文需要更大上下文
+    根据文本内容 + 页码判断段落类型（用于 chunk 权重和检索优先级）
     """
-    from langchain.text_splitter import RecursiveCharacterTextSplitter
+    first_line = text.strip().split('\n')[0][:100].lower()
 
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=chunk_size,
-        chunk_overlap=200,  # 200 字重叠，学术论述连贯性更强
-        separators=["\n\n\n", "\n\n", "\n", "。", "！", "？"],
-        length_function=lambda x: len(x),  # 中文字符数
-    )
+    # 摘要（通常第1页，或有"摘要"关键字）
+    if page_num == 1 and any(kw in first_line for kw in ['摘要', 'abstract', '概要', '提要']):
+        return "abstract"
+    # 引言/背景
+    if any(kw in first_line for kw in ['1', '一、', '引言', 'introduction', '背景', '研究现状']):
+        return "introduction"
+    # 方法
+    if any(kw in first_line for kw in ['方法', 'method', '实验', '数据来源', '2', '二、']):
+        return "method"
+    # 结果
+    if any(kw in first_line for kw in ['结果', 'result', '分析', '3', '三、']):
+        return "result"
+    # 讨论
+    if any(kw in first_line for kw in ['讨论', 'discussion', '4', '四、']):
+        return "discussion"
+    # 结论
+    if any(kw in first_line for kw in ['结论', 'conclusion', '总结', '主要发现', '研究发现']):
+        return "conclusion"
+    # 参考文献
+    if any(kw in first_line for kw in ['参考文献', 'reference', '引用', 'bibliography']):
+        return "reference"
 
-    chunks = splitter.split_documents(documents)
-    return chunks
+    # 默认正文
+    return "body"
+
+
+# ─── 两级 Chunk ────────────────────────────────────────
+class TwoLevelChunker:
+    """
+    两级 Chunk 设计（学术 RAG 最佳实践）：
+
+    召回块（Recall Chunk）：
+      - 长度：400-800 tokens（中文约 800-1600 字）
+      - 切分依据：按语义段落/小节重叠切分
+      - 用途：初次检索，保证召回率
+
+    证据块（Evidence Chunk）：
+      - 长度：150-350 tokens（中文约 300-700 字）
+      - 切分依据：按单段/结论句/表格行切分
+      - 用途：最终生成引用的最小单元，精确到句
+    """
+
+    def __init__(self):
+        from langchain.text_splitter import RecursiveCharacterTextSplitter
+
+        # 召回块分割器：按自然段落切分
+        self.recall_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=6000,   # 中文字符数（约 600-800 tokens）
+            chunk_overlap=400, # 400 字重叠，防止段落割裂
+            separators=["\n\n\n", "\n\n", "\n", "。", "！", "？", "；"],
+            length_function=lambda x: len(x),
+        )
+
+        # 证据块分割器：更细粒度，按单句切分
+        self.evidence_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=2000,   # 中文约 2000 字（150-350 tokens）
+            chunk_overlap=150,
+            separators=["\n", "。", "！", "？"],
+            length_function=lambda x: len(x),
+        )
+
+    def chunk(self, documents: list[Document]) -> list[Document]:
+        """
+        对原始文档做两级切分：
+        1. 先切召回块
+        2. 再从召回块切证据块
+        3. 合并，去重，保留位置信息
+        """
+        recall_chunks = self.recall_splitter.split_documents(documents)
+        evidence_chunks = self.evidence_splitter.split_documents(documents)
+
+        all_chunks = []
+
+        # 合并，设置 chunk_type
+        for i, chunk in enumerate(recall_chunks):
+            meta = dict(chunk.metadata)
+            meta["chunk_type"] = "recall"
+            meta["recall_index"] = i
+            all_chunks.append(Document(
+                page_content=chunk.page_content,
+                metadata=meta,
+            ))
+
+        for i, chunk in enumerate(evidence_chunks):
+            meta = dict(chunk.metadata)
+            meta["chunk_type"] = "evidence"
+            meta["evidence_index"] = i
+            all_chunks.append(Document(
+                page_content=chunk.page_content,
+                metadata=meta,
+            ))
+
+        return all_chunks
 
 
 # ─── 向量化 + 存入 ChromaDB ───────────────────────────
@@ -132,36 +280,33 @@ async def process_pdf(
     progress_callback: callable = None,
 ) -> dict[str, Any]:
     """
-    完整 pipeline：PDF → 解析 → 分块 → 本地向量 → ChromaDB
+    完整 pipeline：PDF → Docling解析 → 两级Chunk → BGE向量 → ChromaDB
 
-    Args:
-        progress_callback: 进度回调，签名为 emit(stage, progress, **kwargs)
-                          stage: parsing | chunking | embedding | indexing | complete | error
-
-    Returns: {chunks_count}
+    进度阶段：parsing → chunking → embedding → indexing → complete
     """
     def emit(stage: str, progress: float, **kwargs):
         if progress_callback:
             progress_callback(stage, progress, **kwargs)
 
-    # 1. 解析 PDF
-    print(f"[{paper_id}] 开始解析 PDF...")
+    # 1. Docling 解析 PDF
+    print(f"[{paper_id}] 开始 Docling 解析 PDF...")
     emit("parsing", 0.1)
-    raw_docs, content_hash = parse_pdf(pdf_path)
-    print(f"[{paper_id}] 解析完成，共 {len(raw_docs)} 个元素，内容哈希: {content_hash[:16]}...")
+    raw_docs, content_hash = parse_pdf_docling(pdf_path)
+    print(f"[{paper_id}] Docling 解析完成：{len(raw_docs)} 个原始单元（正文+表格+参考文献）")
 
     if not raw_docs:
         raise ValueError(f"PDF 解析失败，文档为空: {pdf_path}")
 
-    # 2. 分块
+    # 2. 两级分块
     emit("chunking", 0.3)
-    chunks = chunk_documents(raw_docs)
-    print(f"[{paper_id}] 分块完成，共 {len(chunks)} 个 chunks")
+    chunker = TwoLevelChunker()
+    all_chunks = chunker.chunk(raw_docs)
+    print(f"[{paper_id}] 两级 Chunk 完成：{len(all_chunks)} 个 chunks（Recall + Evidence）")
 
-    if not chunks:
+    if not all_chunks:
         raise ValueError(f"PDF 分块失败，chunks 为空: {pdf_path}")
 
-    # 3. 初始化 MiniMax Embedding
+    # 3. 初始化 Embedding
     emit("embedding", 0.5)
     embedding_fn = get_chroma_embedding_fn()
 
@@ -177,56 +322,61 @@ async def process_pdf(
 
     # 5. 写入向量
     emit("indexing", 0.7)
-    texts = [c.page_content for c in chunks]
+    texts = [c.page_content for c in all_chunks]
     metadatas = [
         {
             "paper_id": paper_id,
             "title": title,
-            "chunk_index": i,
+            "chunk_type": c.metadata.get("chunk_type", "recall"),
+            "section_type": c.metadata.get("section_type", "body"),
+            "source": c.metadata.get("source", "body"),
             "page_number": c.metadata.get("page_number", 0),
-            "text": c.page_content[:200],
+            "chunk_index": i,
+            "text": c.page_content[:200],  # 前200字预览
+            # 证据块额外字段
+            "is_evidence": c.metadata.get("chunk_type") == "evidence",
+            "is_recall": c.metadata.get("chunk_type") == "recall",
         }
-        for i, c in enumerate(chunks)
+        for i, c in enumerate(all_chunks)
     ]
 
     vectorstore.add_texts(texts=texts, metadatas=metadatas)
 
-    print(f"[{paper_id}] ✅ 向量写入完成，{len(chunks)} 个 chunks → collection '{safe_collection_name}'")
-    print(f"[{paper_id}]    Embedding 模型: {EMBEDDING_MODEL}（本地，{EMBEDDING_DIM} 维）")
+    recall_count = sum(1 for m in metadatas if m["chunk_type"] == "recall")
+    evidence_count = sum(1 for m in metadatas if m["chunk_type"] == "evidence")
 
-    emit("complete", 1.0, chunks_count=len(chunks))
-    return {"chunks_count": len(chunks), "content_hash": content_hash}
+    print(f"[{paper_id}] ✅ 向量写入完成：{recall_count} 召回块 + {evidence_count} 证据块")
+    print(f"[{paper_id}]    Collection: '{safe_collection_name}'")
+    print(f"[{paper_id}]    Embedding: {EMBEDDING_MODEL}（1024维）")
+
+    emit("complete", 1.0, chunks_count=len(all_chunks))
+    return {
+        "chunks_count": len(all_chunks),
+        "recall_count": recall_count,
+        "evidence_count": evidence_count,
+        "content_hash": content_hash,
+    }
 
 
-# ─── Hybrid Search（关键词预筛 + 向量重排）─────────────
+# ─── Hybrid Search（保留原有实现）──────────────────────
 def hybrid_search(vectorstore, query: str, query_embedding_fn, k: int = 10) -> list[dict]:
     """
-    混合检索策略（不依赖 rank_bm25）：
+    混合检索策略（关键词预筛 + 向量重排 + 页码权重）
+    学术问答中专业术语必须精确匹配，纯向量语义不足以捕捉术语相关性
 
-    Step 1: 提取查询关键词（保留完整词，因为中文专业术语不能随意分割）
-    Step 2: 批量获取 ChromaDB 中的 chunks，过滤包含关键词的候选
-    Step 3: 对候选做向量相似度排序
-    Step 4: 融合关键词命中分（命中权重 40%）和向量分（60%）
-
-    学术问答中，专业术语（CBAM、碳边境调节机制）必须精确匹配，
-    纯向量语义相似度不足以捕捉术语相关性
+    策略：向量 50% + 关键词 30% + 页码位置 20%
     """
-    # Step 1: 提取关键词（中文 + 英文缩写，对学术术语尤其重要）
     import re
-    # 中文词（至少2个汉字）
+
+    # 提取关键词（中文词 + 英文缩写）
     chinese_words = re.findall(r'[\u4e00-\u9fff]{2,}', query)
-    # 英文词（至少2个字母，用于 CBAM 等英文术语）
     english_words = re.findall(r'[a-zA-Z]{2,}', query)
-    # 合并，中文优先，英文作为独立关键词
     keywords = chinese_words + english_words
-    # 去重
     seen = set()
     keywords = [w for w in keywords if not (w in seen or seen.add(w))]
-    # 保留原始查询（不区分大小写，用于精确匹配）
     query_lower = query.lower()
 
-    # Step 2: 获取足够多的 chunks 进行关键词过滤
-    # 直接用 query_embeddings 绕过 ChromaDB 内置 embedder（避免 384d vs 1024d 维度冲突）
+    # 向量检索候选
     query_vec = query_embedding_fn.embed_query(query)
     native_results = vectorstore._collection.query(
         query_embeddings=[query_vec],
@@ -234,7 +384,6 @@ def hybrid_search(vectorstore, query: str, query_embedding_fn, k: int = 10) -> l
         include=["documents", "metadatas", "distances"],
     )
 
-    # 将原生结果转换为 Document 对象（兼容后续处理逻辑）
     from langchain_core.documents import Document
     vector_candidates = []
     docs = native_results.get("documents", [[]])[0]
@@ -242,22 +391,20 @@ def hybrid_search(vectorstore, query: str, query_embedding_fn, k: int = 10) -> l
     dists = native_results.get("distances", [[]])[0]
     for doc, meta, dist in zip(docs, metas, dists):
         d = Document(page_content=doc, metadata=meta)
-        d.metadata["_score"] = 1.0 - dist  # distance → similarity
+        d.metadata["_score"] = 1.0 - dist
         vector_candidates.append(d)
 
     if not vector_candidates:
         return []
 
-    # Step 3: 关键词命中检测（支持全角/半角归一化）
+    # 全角→半角归一化
     def to_halfwidth(text: str) -> str:
-        """全角→半角归一化（用于关键词匹配）"""
         result = []
         for ch in text:
             code = ord(ch)
-            # 全角英文区：0xFF01-0xFF5E → 转为 0x21-0x7E
             if 0xFF01 <= code <= 0xFF5E:
                 result.append(chr(code - 0xFEE0))
-            elif code == 0x3000:  # 全角空格
+            elif code == 0x3000:
                 result.append(' ')
             else:
                 result.append(ch)
@@ -266,14 +413,13 @@ def hybrid_search(vectorstore, query: str, query_embedding_fn, k: int = 10) -> l
     for r in vector_candidates:
         content = r.page_content
         content_lower = to_halfwidth(content).lower()
-        # 统计命中了多少个关键词（全角/半角不敏感）
-        keyword_hits = sum(1 for kw in keywords if to_halfwidth(kw).lower() in content_lower)
+        keyword_hits = sum(
+            1 for kw in keywords
+            if to_halfwidth(kw).lower() in content_lower
+        )
         r.metadata['_keyword_hits'] = keyword_hits
-        # 额外：检查是否包含完整查询词（全角/半角不敏感）
-        full_hit = 1 if to_halfwidth(query_lower) in content_lower else 0
-        r.metadata['_full_hit'] = full_hit
+        r.metadata['_full_hit'] = 1 if to_halfwidth(query_lower) in content_lower else 0
 
-    # Step 4: 向量分数归一化
     max_score = max(r.metadata.get('_score', 1.0) for r in vector_candidates) or 1.0
     max_kw = max(r.metadata.get('_keyword_hits', 0) for r in vector_candidates) or 1
 
@@ -281,27 +427,33 @@ def hybrid_search(vectorstore, query: str, query_embedding_fn, k: int = 10) -> l
     for r in vector_candidates:
         vector_score = r.metadata.get('_score', max_score * 0.5) / max_score
         kw_hits = r.metadata.get('_keyword_hits', 0)
-        kw_score = kw_hits / max_kw  # 归一化关键词分
+        kw_score = kw_hits / max_kw
         full_hit = r.metadata.get('_full_hit', 0)
 
-        # 融合：向量 50% + 关键词 30% + 页码位置 20%（学术论文前几页是摘要/引言，权重高）
         combined = 0.5 * vector_score + 0.3 * kw_score
 
-        # 页码位置权重：前几页（摘要/引言/结论）加分，参考文献降权
+        # Evidence chunk 优先（引用精确度更高）
+        if r.metadata.get('is_evidence'):
+            combined += 0.15
+
+        # 摘要/结论/方法章节加分
+        section = r.metadata.get('section_type', 'body')
+        if section in ('abstract', 'conclusion'):
+            combined += 0.2
+        elif section == 'method':
+            combined += 0.1
+        elif section == 'reference':
+            combined -= 0.2
+
+        # 页码位置权重
         page = r.metadata.get('page_number', 999)
         if page <= 3:
-            page_bonus = 0.2  # 封面/摘要
-        elif page <= 10:
-            page_bonus = 0.1  # 引言/背景
-        elif page <= 25:
-            page_bonus = 0.0  # 正文
-        else:
-            page_bonus = -0.15  # 参考文献/附录降权
-        combined += page_bonus
+            combined += 0.15
+        elif page >= 25:
+            combined -= 0.1
 
-        # 如果完整查询命中，直接加分
         if full_hit:
-            combined = combined * 1.3 + 0.2
+            combined = combined * 1.3 + 0.15
 
         fused.append({
             "doc": r,
@@ -309,10 +461,10 @@ def hybrid_search(vectorstore, query: str, query_embedding_fn, k: int = 10) -> l
             "vector_score": round(vector_score, 4),
             "keyword_hits": kw_hits,
             "full_hit": full_hit,
-            "page_bonus": round(page_bonus, 3),
+            "chunk_type": r.metadata.get('chunk_type', 'recall'),
+            "section_type": section,
         })
 
-    # 按综合分数排序
     fused.sort(key=lambda x: x["combined_score"], reverse=True)
     return fused[:k]
 
@@ -321,17 +473,14 @@ def hybrid_search(vectorstore, query: str, query_embedding_fn, k: int = 10) -> l
 async def search_chunks(
     query: str,
     collection_name: str,
-    top_k: int = 10,  # 增大到 10，候选多了答案更完整
+    top_k: int = 10,
     openai_api_key: str = "",
     persist_directory: str = CHROMADB_DIR,
 ) -> list[dict]:
     """
-    将问题向量化 → ChromaDB 检索 → 返回相关 chunks
-    使用本地 sentence-transformers embedding + Hybrid Search
-    top_k 增大到 8，向量检索候选更丰富
+    语义检索：向量化 → ChromaDB → 混合检索 → 返回相关 chunks
     """
     safe_collection_name = re.sub(r"[^a-zA-Z0-9_]", "_", collection_name)
-
     embedding_fn = get_chroma_embedding_fn()
 
     vectorstore = Chroma(
@@ -340,7 +489,6 @@ async def search_chunks(
         persist_directory=persist_directory,
     )
 
-    # 检索 2 倍 top_k，再从中选最好的（Hybrid Search 重排）
     hybrid_results = hybrid_search(vectorstore, query, embedding_fn, k=top_k * 3)
 
     chunks = []
@@ -349,6 +497,8 @@ async def search_chunks(
         chunks.append({
             "content": r.page_content,
             "paper_id": r.metadata.get("paper_id", ""),
+            "chunk_type": r.metadata.get("chunk_type", "recall"),
+            "section_type": r.metadata.get("section_type", "body"),
             "chunk_index": r.metadata.get("chunk_index", 0),
             "page_number": r.metadata.get("page_number", 0),
             "text": r.metadata.get("text", ""),
