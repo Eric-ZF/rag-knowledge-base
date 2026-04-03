@@ -17,7 +17,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from auth import create_access_token, verify_token, hash_password, verify_password
-from config import validate_minimax_chat_config, MINIMAX_API_KEY, MINIMAX_GROUP_ID, CHROMADB_DIR
+from config import validate_minimax_chat_config, MINIMAX_API_KEY, MINIMAX_GROUP_ID, CHROMADB_DIR, PAPERS_DIR
 from data import (
     init_papers, init_users,
     get_paper, upsert_paper, update_paper, delete_paper,
@@ -252,6 +252,12 @@ async def upload_paper(
     paper_id = str(uuid.uuid4())
     title = file.filename.replace(".pdf", "").strip()
 
+    # PDF 持久化存储（不在 /tmp，避免重启丢失）
+    os.makedirs(PAPERS_DIR, exist_ok=True)
+    pdf_path = f"{PAPERS_DIR}/{paper_id}.pdf"
+    Path(pdf_path).write_bytes(content)
+
+    # 同时保留一份在 /tmp 供后台任务处理（处理完会删除 /tmp 那份）
     tmp_path = f"/tmp/{paper_id}.pdf"
     Path(tmp_path).write_bytes(content)
 
@@ -263,6 +269,7 @@ async def upload_paper(
         "chunks_count": None,
         "content_hash": content_hash,
         "collection": user["collection"],
+        "pdf_path": pdf_path,  # 持久化路径，供 PDF 下载 endpoint 使用
         "error": None,
         "created_at": datetime.utcnow().isoformat(),
     })
@@ -325,6 +332,24 @@ async def paper_status(paper_id: str, user_info: tuple = Depends(get_current_use
     }
 
 
+@app.get("/papers/{paper_id}/pdf")
+async def get_paper_pdf(paper_id: str, user_info: tuple = Depends(get_current_user)):
+    """下载论文 PDF 文件，支持浏览器 PDF 插件直接预览"""
+    _, user = user_info
+    p = get_paper(paper_id)
+    if not p or p["user_id"] != user_info[0]:
+        raise HTTPException(404, "论文不存在")
+    pdf_path = p.get("pdf_path")
+    if not pdf_path or not Path(pdf_path).exists():
+        raise HTTPException(404, "PDF 文件不存在，可能尚未处理完成")
+    from fastapi.responses import FileResponse
+    return FileResponse(
+        path=pdf_path,
+        filename=f"{p['title']}.pdf",
+        media_type="application/pdf",
+    )
+
+
 @app.get("/papers")
 async def list_papers(user_info: tuple = Depends(get_current_user)):
     _, user = user_info
@@ -380,6 +405,13 @@ async def delete_paper(paper_id: str, user_info: tuple = Depends(get_current_use
     user["papers"].remove(paper_id)
     _save_users()
     delete_paper(paper_id)
+
+    # 删除持久化的 PDF 文件
+    pdf_path = p.get("pdf_path")
+    if pdf_path and Path(pdf_path).exists():
+        Path(pdf_path).unlink()
+        print(f"[{paper_id}] 🗑️ PDF 文件已删除: {pdf_path}")
+
     return {"ok": True, "paper_id": paper_id, "title": p["title"]}
 
 

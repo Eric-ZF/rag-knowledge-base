@@ -465,6 +465,39 @@ def hybrid_search(vectorstore, query: str, query_embedding_fn, k: int = 10) -> l
             "section_type": section,
         })
 
+    # ── CrossEncoder 重排（精排 Top candidates）────────────
+    # 对候选文档做语义重排序，解决"向量相似但非正确答案"问题
+    try:
+        from sentence_transformers import CrossEncoder
+
+        # BAAI/bge-reranker-base: 中文优化，支持中英混合
+        reranker = CrossEncoder("BAAI/bge-reranker-base", max_length=512)
+
+        # 取 Top 20 候选做重排
+        top_candidates = fused[:20]
+        doc_texts = [item["doc"].page_content for item in top_candidates]
+
+        # CrossEncoder 计算 query-doc 相关度分数
+        ce_scores = reranker.predict(
+            [(query, doc) for doc in doc_texts],
+            show_progress_bar=False,
+        )
+
+        # 归一化 CrossEncoder 分数
+        max_ce = max(ce_scores) if max(ce_scores) != min(ce_scores) else 1.0
+        min_ce = min(ce_scores)
+        ce_norm = [(s - min_ce) / (max_ce - min_ce + 1e-8) for s in ce_scores]
+
+        # 融合：原有 combined_score(60%) + CrossEncoder(40%)
+        for i, item in enumerate(top_candidates):
+            item["combined_score"] = round(0.6 * item["combined_score"] + 0.4 * ce_norm[i], 4)
+            item["ce_score"] = round(ce_norm[i], 4)
+
+        fused = top_candidates
+        print(f"[hybrid_search] CrossEncoder 重排完成，Top 20 精确度提升")
+    except Exception as e:
+        print(f"[hybrid_search] ⚠️ CrossEncoder 重排失败（{e}），使用原有融合分数")
+
     fused.sort(key=lambda x: x["combined_score"], reverse=True)
     return fused[:k]
 

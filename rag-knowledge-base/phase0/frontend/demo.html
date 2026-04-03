@@ -21,7 +21,24 @@
   .qa { background: white; border-radius: 8px; padding: 12px; margin: 8px 0; }
   .qa .q { font-weight: 600; color: #c44b3a; }
   .qa .a { margin-top: 6px; color: #2d2d44; line-height: 1.5; }
-  .cite { display: inline-block; background: #f0eeeb; padding: 2px 6px; border-radius: 4px; font-size: 11px; margin: 2px 4px 2px 0; }
+  .cite {
+    display: inline-block;
+    background: #f0eeeb;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 11px;
+    margin: 2px 4px 2px 0;
+    cursor: pointer;
+    color: #3a6bc4;
+    text-decoration: none;
+    border: 1px solid #d0d8ec;
+    transition: background 0.15s, color 0.15s;
+  }
+  .cite:hover {
+    background: #3a6bc4;
+    color: white;
+    border-color: #3a6bc4;
+  }
   input[type="file"] { font-size: 13px; }
   #quota { font-size: 13px; color: #5c5c7a; margin-bottom: 12px; }
 </style>
@@ -187,7 +204,7 @@ async function doChat() {
     let cites = '';
     if (r.citations && r.citations.length) {
       cites = '<div style="margin-top:8px">' + r.citations.map(c =>
-        `<span class="cite">页${c.page_number}</span>`
+        `<a class="cite" href="${API}/papers/${c.paper_id}/pdf#page=${c.page_number}" target="_blank" title="打开 PDF 第${c.page_number}页">📄 页${c.page_number}</a>`
       ).join('') + '</div>';
     }
     div.innerHTML = `<div class="q">Q: ${q}</div><div class="a">${r.answer}${cites}</div>`;
