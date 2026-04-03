@@ -6,7 +6,7 @@
 - **登录**: bosstest@boss.io / BossPhase0（pro 账号）
 - **偏好**: 直接给结论，不要过多询问
 
-## RAG 学术知识库项目（Phase 0.7）
+## RAG 学术知识库项目（Phase 0.7 - Docling + 两级Chunk）
 - **项目路径**: `/root/.openclaw/workspace/rag-knowledge-base/phase0/`
 - **后端**: FastAPI on :8000，`python3 /tmp/start_backend.py` 启动
 - **前端**: nginx on :80+:8080，静态文件 + API 反代
@@ -25,7 +25,16 @@
 - 需要上传的 3 篇论文：
   1. EU CBAM 英文版（纸质 PDF）
   2. 阮建平/黄辉平「规范性力量」视角下欧盟碳边境调节机制的扩散与中国的因应（《德国研究》2025年第6期）
-  3. 制造业碳排放（黄赜琳）
+  3. 制造业碳排放（黄赼琳）
+
+### Phase 0.7 升级内容（2026-04-03）
+- **Docling 2.x 解析**：表格/参考文献/段落结构化，section_type 自动分类
+- **两级 Chunk**：
+  - Recall Chunk（6000字/400字重叠）→ 高召回
+  - Evidence Chunk（2000字/150字重叠）→ 精确引用
+- **hybrid_search 升级**：Evidence块优先+0.15，section_type权重，页码权重
+- **chunk_type metadata**：每个chunk标注 recall/evidence，用于答案引用标注
+- **依赖**：docling-2.84.0, semchunk-3.2.5（自动安装）
 
 ### 已修复的 RAG 质量问题（2026-03-31）
 - chunk_size: 800→2000, overlap: 80→200
