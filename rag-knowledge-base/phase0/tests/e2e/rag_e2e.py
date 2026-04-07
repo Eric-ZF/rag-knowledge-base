@@ -214,7 +214,7 @@ def run():
             page.wait_for_timeout(1500)  # 等待 logout DOM 稳定
             page.fill("#email-input", EMAIL)
             page.fill("#password-input", PASSWORD)
-            page.click("#btn-login", force=True)
+            page.locator("#btn-login").dispatch_event("click")
             # 等待 app 出现（登录成功）或按钮恢复（失败）
             page.wait_for_selector("#app", timeout=30000)
             page.wait_for_timeout(1000)
