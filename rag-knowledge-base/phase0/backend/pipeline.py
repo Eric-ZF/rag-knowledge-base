@@ -97,9 +97,62 @@ def _table_to_markdown(table_obj) -> str:
         return ""
 
 
-def parse_pdf_docling(pdf_path: str) -> tuple[list[Document], str]:
+def _extract_pdf_metadata(result) -> dict:
     """
-    使用 Docling 2.84.0 解析 PDF，返回结构化 Documents + content hash。
+    从 Docling ConversionResult 中提取 PDF 元数据。
+    尝试获取：title, authors, year, doi, journal
+    """
+    meta = {}
+    try:
+        # Docling result.metadata 的标准字段
+        doc_meta = getattr(result, 'metadata', None) or {}
+        if hasattr(doc_meta, '__dict__'):
+            doc_meta = vars(doc_meta)
+
+        # title：优先用 Docling 解析出的标题，否则用 PDF metadata
+        meta['title'] = (
+            getattr(result, 'title', None)
+            or doc_meta.get('title')
+            or doc_meta.get('subject')
+            or ''
+        )
+        # authors
+        raw_authors = (
+            getattr(result, 'authors', None)
+            or doc_meta.get('authors')
+            or []
+        )
+        if isinstance(raw_authors, list):
+            meta['authors'] = '; '.join(str(a) for a in raw_authors if a)
+        elif raw_authors:
+            meta['authors'] = str(raw_authors)
+        else:
+            meta['authors'] = ''
+        # year：尝试从 creation_date 提取
+        creation_date = (
+            getattr(result, 'creation_date', None)
+            or doc_meta.get('creation_date')
+        )
+        if creation_date:
+            year_str = str(creation_date)[:4]
+            meta['year'] = int(year_str) if year_str.isdigit() else None
+        else:
+            meta['year'] = None
+        # DOI 和 journal：Docling 通常不直接从 PDF header 提取，放在空字符串
+        # 前端可编辑，或从文本自动识别
+        meta['doi'] = doc_meta.get('doi', '')
+        meta['journal'] = doc_meta.get('journal', '')
+        # 备用：creator/producer
+        meta['publisher'] = doc_meta.get('creator', '') or doc_meta.get('producer', '')
+    except Exception as e:
+        print(f"[WARN] PDF metadata 提取失败: {e}")
+        meta = {'title': '', 'authors': '', 'year': None, 'doi': '', 'journal': '', 'publisher': ''}
+    return meta
+
+
+def parse_pdf_docling(pdf_path: str) -> tuple[list[Document], str, dict]:
+    """
+    使用 Docling 2.84.0 解析 PDF，返回结构化 Documents + content hash + PDF 元数据。
 
     Docling 2.84.0 API：
     - result.pages: list[Page]
@@ -111,6 +164,7 @@ def parse_pdf_docling(pdf_path: str) -> tuple[list[Document], str]:
     Returns:
         documents: List[Document]，每个段落一个 Document
         content_hash: PDF 全文 SHA256（用于去重检测）
+        pdf_metadata: dict {title, authors, year, doi, journal, publisher}
     """
     from docling.document_converter import DocumentConverter
 
@@ -184,7 +238,11 @@ def parse_pdf_docling(pdf_path: str) -> tuple[list[Document], str]:
         ("|||".join(full_text_parts)).encode("utf-8")
     ).hexdigest()
 
-    return documents, content_hash
+    # ── 4. PDF 元数据 ────────────────────────────────────
+    pdf_meta = _extract_pdf_metadata(result)
+    print(f"[DEBUG] PDF metadata: title={pdf_meta.get('title','')[:40]} authors={pdf_meta.get('authors','')[:30]} year={pdf_meta.get('year')}")
+
+    return documents, content_hash, pdf_meta
 
 
 def _classify_section(text: str, page_num: int) -> str:
@@ -310,7 +368,7 @@ async def process_pdf(
     # 1. Docling 解析 PDF
     print(f"[{paper_id}] 开始 Docling 解析 PDF...")
     emit("parsing", 0.1)
-    raw_docs, content_hash = parse_pdf_docling(pdf_path)
+    raw_docs, content_hash, pdf_meta = parse_pdf_docling(pdf_path)
     print(f"[{paper_id}] Docling 解析完成：{len(raw_docs)} 个原始单元（正文+表格+参考文献）")
 
     if not raw_docs:
@@ -342,10 +400,16 @@ async def process_pdf(
     # 5. 写入向量
     emit("indexing", 0.7)
     texts = [c.page_content for c in all_chunks]
+    # 用 PDF 元数据覆盖 title（优先用 Docling 解析出的标题）
+    display_title = pdf_meta.get('title') or title
     metadatas = [
         {
             "paper_id": paper_id,
-            "title": title,
+            "title": display_title,
+            "authors": pdf_meta.get('authors', ''),
+            "year": pdf_meta.get('year'),
+            "journal": pdf_meta.get('journal', ''),
+            "doi": pdf_meta.get('doi', ''),
             "chunk_type": c.metadata.get("chunk_type", "recall"),
             "section_type": c.metadata.get("section_type", "body"),
             "source": c.metadata.get("source", "body"),
@@ -374,6 +438,7 @@ async def process_pdf(
         "recall_count": recall_count,
         "evidence_count": evidence_count,
         "content_hash": content_hash,
+        "pdf_metadata": pdf_meta,
     }
 
 

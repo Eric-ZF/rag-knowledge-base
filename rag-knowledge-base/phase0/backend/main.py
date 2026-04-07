@@ -187,9 +187,21 @@ def _process_pdf_background(paper_id: str, tmp_path: str, collection: str, title
             title=title,
             progress_callback=emit,
         ))
-        update_paper(paper_id, status="ready", chunks_count=result["chunks_count"])
+        # 提取 PDF 元数据，用 Docling 解析出的标题覆盖文件名标题
+        pdf_meta = result.get("pdf_metadata", {}) or {}
+        display_title = pdf_meta.get('title') or title
+        update_fields = {
+            "status": "ready",
+            "chunks_count": result["chunks_count"],
+            "title": display_title,
+            "authors": pdf_meta.get('authors', ''),
+            "year": pdf_meta.get('year'),
+            "journal": pdf_meta.get('journal', ''),
+            "doi": pdf_meta.get('doi', ''),
+        }
+        update_paper(paper_id, **update_fields)
         emit("complete", 1.0, chunks_count=result["chunks_count"])
-        print(f"[{paper_id}] ✅ 索引完成，{result['chunks_count']} chunks")
+        print(f"[{paper_id}] ✅ 索引完成，{result['chunks_count']} chunks, title={display_title[:40]}")
     except Exception as e:
         update_paper(paper_id, status="error", error=str(e))
         emit("error", 0, error=str(e))
@@ -385,18 +397,21 @@ async def list_papers(user_info: tuple = Depends(get_current_user)):
             client = chromadb.PersistentClient(path=CHROMADB_DIR)
             safe_name = re.sub(r"[^a-zA-Z0-9_]", "_", p["collection"])
             col = client.get_collection(safe_name)
-            count = len(col.get(where={"paper_id": pid})["ids"])
-        except Exception:
-            count = p.get("chunks_count") or 0
+            ids = col.get(where={"paper_id": pid})["ids"]
+            count = len(ids) if ids else 0
         except Exception:
             count = p.get("chunks_count") or 0
         results.append({
             "paper_id": pid,
-            "title": p["title"],
-            "status": p["status"],
+            "title": p.get("title") or "",
+            "authors": p.get("authors") or "",
+            "year": p.get("year"),
+            "journal": p.get("journal") or "",
+            "doi": p.get("doi") or "",
+            "status": p.get("status") or "unknown",
             "chunks_count": count,
             "created_at": p.get("created_at", ""),
-            "deletable": p["status"] != "processing",
+            "deletable": p.get("status") != "processing",
         })
     return results
 
