@@ -436,6 +436,33 @@ async def delete_paper(paper_id: str, user_info: tuple = Depends(get_current_use
     return {"ok": True, "paper_id": paper_id, "title": p["title"]}
 
 
+# ─── 耗时拆解工具 ─────────────────────────────────────
+import time, functools
+
+def _timed(label: str, logger=print):
+    """装饰器：自动打印函数执行时间"""
+    def deco(func):
+        @functools.wraps(func)
+        async def async_wrapper(*args, **kwargs):
+            t0 = time.monotonic()
+            result = await func(*args, **kwargs)
+            elapsed = (time.monotonic() - t0) * 1000
+            logger(f"[⏱️ {label}] {elapsed:.0f}ms")
+            return result
+        @functools.wraps(func)
+        def sync_wrapper(*args, **kwargs):
+            t0 = time.monotonic()
+            result = func(*args, **kwargs)
+            elapsed = (time.monotonic() - t0) * 1000
+            logger(f"[⏱️ {label}] {elapsed:.0f}ms")
+            return result
+        import asyncio
+        if asyncio.iscoroutinefunction(func):
+            return async_wrapper
+        return sync_wrapper
+    return deco
+
+
 # ─── RAG 问答 ─────────────────────────────────────────
 @app.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest, user_info: tuple = Depends(get_current_user)):
@@ -444,6 +471,10 @@ async def chat(req: ChatRequest, user_info: tuple = Depends(get_current_user)):
         raise HTTPException(503, "MiniMax API 未配置")
 
     collection = req.collection_name or user["collection"]
+
+    # ── 计时开始 ─────────────────────────────────────
+    t0 = time.monotonic()
+    log_timing = lambda msg: print(f"[/chat {req.question[:30]}...] {msg}")
 
     # 只查询 status=ready 的论文
     ready = [
@@ -471,31 +502,42 @@ async def chat(req: ChatRequest, user_info: tuple = Depends(get_current_user)):
     # survey 模式需要更多 chunks（20篇论文 → 检索 40 个 chunks）
     effective_top_k = max(req.top_k * 5, 20) if req.mode == "survey" else req.top_k
 
+    t1 = time.monotonic()
     chunks = await search_chunks(
         query=req.question,
         collection_name=collection,
         top_k=effective_top_k,
     )
+    embedding_ms = (time.monotonic() - t1) * 1000
 
     # 过滤到目标论文范围
     if req.paper_ids:
         chunks = [c for c in chunks if c["paper_id"] in target_pids]
 
     if not chunks:
+        total_ms = (time.monotonic() - t0) * 1000
+        print(f"[/chat] ⚠️ 无相关 chunks，检索耗时 {embedding_ms:.0f}ms，总耗时 {total_ms:.0f}ms")
         return ChatResponse(
             answer="抱歉，我在你的论文库中没有找到相关内容。",
             citations=[],
             meta={"mode": req.mode, "paper_count": 0, "chunk_count": 0},
         )
 
+    t2 = time.monotonic()
     try:
         answer_text, citations, meta = await generate_answer(
             question=req.question,
             chunks=chunks,
             mode=req.mode,
         )
+        llm_ms = (time.monotonic() - t2) * 1000
+        total_ms = (time.monotonic() - t0) * 1000
+        print(f"[/chat] ✅ 回答生成 | 检索: {embedding_ms:.0f}ms | LLM: {llm_ms:.0f}ms | 总计: {total_ms:.0f}ms | chunks: {len(chunks)} | 论文数: {meta.get('paper_count',0)}")
+        meta["timing_ms"] = {"embedding": round(embedding_ms), "llm": round(llm_ms), "total": round(total_ms)}
         return ChatResponse(answer=answer_text, citations=citations, meta=meta)
     except Exception as e:
+        total_ms = (time.monotonic() - t0) * 1000
+        print(f"[/chat] ❌ 生成失败 | 检索: {embedding_ms:.0f}ms | 总耗时: {total_ms:.0f}ms | 错误: {e}")
         raise HTTPException(500, f"生成答案失败: {e}")
 
 

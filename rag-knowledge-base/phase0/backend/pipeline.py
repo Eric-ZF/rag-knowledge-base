@@ -28,6 +28,8 @@ from config import EMBEDDING_MODEL, EMBEDDING_DIM, CHROMADB_DIR
 _embedding_model = None
 
 
+
+
 def get_embedding_model():
     """获取本地 Embedding 模型（单例，BGE-large-zh-v1.5, 1024维）"""
     global _embedding_model
@@ -64,88 +66,105 @@ def get_chroma_embedding_fn():
 
 
 # ─── Docling PDF 解析 ──────────────────────────────────
+def _table_to_markdown(table_obj) -> str:
+    """
+    将 Docling 2.84.0 的 Table 对象转换为 Markdown 格式。
+    Table.table_cells 是扁平列表，按 row/col offset 索引排列。
+    """
+    try:
+        num_rows = table_obj.num_rows or 0
+        num_cols = table_obj.num_cols or 0
+        if num_rows == 0 or num_cols == 0 or not table_obj.table_cells:
+            return ""
+
+        # 构建 grid[row][col] = text
+        grid = [["" for _ in range(num_cols)] for _ in range(num_rows)]
+        for cell in table_obj.table_cells:
+            row = cell.start_row_offset_idx
+            col = cell.start_col_offset_idx
+            if 0 <= row < num_rows and 0 <= col < num_cols:
+                grid[row][col] = (cell.text or "").strip()
+
+        # 生成 Markdown table
+        md_lines = []
+        md_lines.append("| " + " | ".join(f"col{j}" for j in range(num_cols)) + " |")
+        md_lines.append("|" + "|".join(["---"] * num_cols) + "|")
+        for row in grid:
+            md_lines.append("| " + " | ".join(str(c).strip() for c in row) + " |")
+
+        return "\n".join(md_lines)
+    except Exception:
+        return ""
+
+
 def parse_pdf_docling(pdf_path: str) -> tuple[list[Document], str]:
     """
-    使用 Docling 2.x 解析 PDF，返回结构化 Documents + content hash。
+    使用 Docling 2.84.0 解析 PDF，返回结构化 Documents + content hash。
 
-    Docling 提取：
-    - 正文文本（按页+段落结构）
-    - 表格（Markdown 格式）
-    - 参考文献列表
-    - 页码 metadata
+    Docling 2.84.0 API：
+    - result.pages: list[Page]
+    - page.assembled.elements: list[PageElement]
+      其中 PageElement = TextElement | Table | FigureElement | ContainerElement
+    - TextElement.text: str
+    - Table.table_cells: list[TableCell] (含 row/col offset)
 
     Returns:
         documents: List[Document]，每个段落一个 Document
         content_hash: PDF 全文 SHA256（用于去重检测）
     """
     from docling.document_converter import DocumentConverter
-    from docling.datamodel.base_models import InputFormat
 
     converter = DocumentConverter()
     result = converter.convert(source=pdf_path)
 
-    all_parts = []  # (text, metadata)
+    all_parts = []
     full_text_parts = []
 
-    # ── 1. 正文页面文本 ──────────────────────────────────
-    for page_num, page in enumerate(result.pages, start=1):
-        # Docling page.text 是该页所有段落的合并文本
-        page_text = page.text if hasattr(page, 'text') else ""
-        if not page_text or not page_text.strip():
-            continue
-
-        # 按空行分段（保留语义段落）
-        paragraphs = [p.strip() for p in page_text.split('\n\n') if p.strip()]
-        for para in paragraphs:
-            # 识别段落类型
-            section_type = _classify_section(para, page_num)
-            all_parts.append({
-                "text": para,
-                "page_number": page_num,
-                "section_type": section_type,
-                "source": "body",
-            })
-            full_text_parts.append(para)
-
-    # ── 2. 表格（Docling 结构化提取）─────────────────────
+    # ── 1. 正文页面文本（docling 2.84.0 API）────────────
     table_count = 0
-    for table_ix, table_node in enumerate(result.tables):
-        # table_node.table 是 List[List[str]]，转为 Markdown 表格
-        if hasattr(table_node, 'table') and table_node.table:
-            rows = table_node.table
-            if not rows:
-                continue
-            md_lines = []
-            for row in rows:
-                md_lines.append("| " + " | ".join(str(cell).strip() for cell in row) + " |")
-            md_table = "\n".join(md_lines)
-            table_count += 1
-            all_parts.append({
-                "text": f"[表格 {table_count}] {md_table}",
-                "page_number": table_node.provided.page or table_ix + 1,
-                "section_type": "table",
-                "source": "table",
-                "table_index": table_count,
-            })
-            full_text_parts.append(md_table)
+    for page_num, page in enumerate(result.pages, start=1):
+        page_elements = []
+        assembled = getattr(page, "assembled", None)
 
-    # ── 3. 参考文献（从 metadata.refs 获取）──────────────
-    if hasattr(result, 'metadata') and hasattr(result.metadata, 'refs'):
-        refs = result.metadata.refs
-        if refs and hasattr(refs, 'biblio_entries'):
-            for ref_ix, (ref_key, ref_val) in enumerate(refs.biblio_entries.items()):
-                ref_text = ref_val.text if hasattr(ref_val, 'text') else str(ref_val)
-                if ref_text:
+        if assembled is not None and hasattr(assembled, "elements"):
+            page_elements = assembled.elements or []
+
+        # 从 TextElement 提取文本
+        body_texts = []
+        for elem in page_elements:
+            if elem.__class__.__name__ == "TextElement":
+                text = getattr(elem, "text", None)
+                if text and text.strip():
+                    body_texts.append(text.strip())
+            elif elem.__class__.__name__ == "Table":
+                # 表格：转 Markdown
+                md = _table_to_markdown(elem)
+                if md:
+                    table_count += 1
                     all_parts.append({
-                        "text": f"[参考文献] {ref_text}",
-                        "page_number": 999,  # 参考文献通常在最后
-                        "section_type": "reference",
-                        "source": "reference",
-                        "ref_index": ref_ix + 1,
+                        "text": f"[表格 {table_count}]\n{md}",
+                        "page_number": page_num,
+                        "section_type": "table",
+                        "source": "table",
+                        "table_index": table_count,
                     })
-                    full_text_parts.append(ref_text)
+                    full_text_parts.append(md)
 
-    # ── 4. 生成 Documents ───────────────────────────────
+        # 合并同一页的 body 文本，按空行分段
+        page_combined = "\n\n".join(body_texts)
+        if page_combined.strip():
+            paragraphs = [p.strip() for p in page_combined.split("\n\n") if p.strip()]
+            for para in paragraphs:
+                section_type = _classify_section(para, page_num)
+                all_parts.append({
+                    "text": para,
+                    "page_number": page_num,
+                    "section_type": section_type,
+                    "source": "body",
+                })
+                full_text_parts.append(para)
+
+    # ── 2. 生成 Documents ───────────────────────────────
     documents = []
     for i, part in enumerate(all_parts):
         documents.append(Document(
@@ -160,7 +179,7 @@ def parse_pdf_docling(pdf_path: str) -> tuple[list[Document], str]:
             }
         ))
 
-    # ── 5. Content hash ─────────────────────────────────
+    # ── 3. Content hash ─────────────────────────────────
     content_hash = hashlib.sha256(
         ("|||".join(full_text_parts)).encode("utf-8")
     ).hexdigest()
@@ -465,38 +484,8 @@ def hybrid_search(vectorstore, query: str, query_embedding_fn, k: int = 10) -> l
             "section_type": section,
         })
 
-    # ── CrossEncoder 重排（精排 Top candidates）────────────
-    # 对候选文档做语义重排序，解决"向量相似但非正确答案"问题
-    try:
-        from sentence_transformers import CrossEncoder
-
-        # BAAI/bge-reranker-base: 中文优化，支持中英混合
-        reranker = CrossEncoder("BAAI/bge-reranker-base", max_length=512)
-
-        # 取 Top 20 候选做重排
-        top_candidates = fused[:20]
-        doc_texts = [item["doc"].page_content for item in top_candidates]
-
-        # CrossEncoder 计算 query-doc 相关度分数
-        ce_scores = reranker.predict(
-            [(query, doc) for doc in doc_texts],
-            show_progress_bar=False,
-        )
-
-        # 归一化 CrossEncoder 分数
-        max_ce = max(ce_scores) if max(ce_scores) != min(ce_scores) else 1.0
-        min_ce = min(ce_scores)
-        ce_norm = [(s - min_ce) / (max_ce - min_ce + 1e-8) for s in ce_scores]
-
-        # 融合：原有 combined_score(60%) + CrossEncoder(40%)
-        for i, item in enumerate(top_candidates):
-            item["combined_score"] = round(0.6 * item["combined_score"] + 0.4 * ce_norm[i], 4)
-            item["ce_score"] = round(ce_norm[i], 4)
-
-        fused = top_candidates
-        print(f"[hybrid_search] CrossEncoder 重排完成，Top 20 精确度提升")
-    except Exception as e:
-        print(f"[hybrid_search] ⚠️ CrossEncoder 重排失败（{e}），使用原有融合分数")
+    # CrossEncoder 重排已禁用（1.9GB 服务器内存不足，无法加载 ~1.1GB 的 bge-reranker-base）
+    # hybrid_search 纯向量+关键词融合已足够好
 
     fused.sort(key=lambda x: x["combined_score"], reverse=True)
     return fused[:k]
