@@ -36,12 +36,48 @@ from typing import Literal
 FEEDBACK_DB_PATH = os.environ.get("FEEDBACK_DB_PATH", "/root/.openclaw/rag-data/feedback_db.json")
 SCORE_THRESHOLD = 50.0  # 低于此分触发记录 & 策略调整
 SIMILARITY_THRESHOLD = 0.4  # 关键词重叠率 ≥ 40% 视为"相似问题"
+MAX_FEEDBACK_ENTRIES = 500   # 最多保留条数（超限按时间倒序删除最旧的）
+FEEDBACK_TTL_DAYS = 30       # 超过此天数的旧记录自动删除
 
 # ─── 存储 ──────────────────────────────────────────────
 class FeedbackStore:
     def __init__(self, db_path: str = FEEDBACK_DB_PATH):
         self.db_path = db_path
         self._ensure_db()
+
+    def _prune_old_entries(self, db: dict) -> dict:
+        """删除超期（>30天）和超量（>500条）的最旧记录"""
+        import datetime
+        cutoff = datetime.datetime.now(timezone.utc) - datetime.timedelta(days=FEEDBACK_TTL_DAYS)
+        cutoff_iso = cutoff.isoformat()
+
+        original_count = len(db["entries"])
+
+        # 按时间倒序：最新的在前
+        entries_sorted = sorted(db["entries"], key=lambda e: e.get("timestamp", ""), reverse=True)
+
+        # 1. 优先保留有 improved_answer 的记录（有效反馈）
+        # 2. 删除超过 MAX_FEEDBACK_ENTRIES 的最旧条目
+        # 3. 删除超过 TTL 的条目
+        kept = []
+        pruned_kept = 0
+        pruned_ttl = 0
+        for entry in entries_sorted:
+            if len(kept) >= MAX_FEEDBACK_ENTRIES and not entry.get("improved_answer"):
+                # 超出容量，且无改进记录 → 删
+                pruned_kept += 1
+                continue
+            if entry.get("timestamp", "") < cutoff_iso and not entry.get("improved_answer"):
+                # 超出 TTL，且无改进记录 → 删
+                pruned_ttl += 1
+                continue
+            kept.append(entry)
+
+        if pruned_kept or pruned_ttl:
+            logger.info(f"[feedback] 清理差评记录：删{pruned_kept}条超量 + 删{pruned_ttl}条超期，保留{len(kept)}条")
+
+        db["entries"] = kept
+        return db
 
     def _ensure_db(self):
         if not os.path.exists(self.db_path):
@@ -143,6 +179,7 @@ class FeedbackStore:
         }
         db = self._load()
         db["entries"].append(entry)
+        db = self._prune_old_entries(db)  # TTL + 容量清理
         self._save(db)
         logger.info(f"[feedback] 差评记录 +1 (id={entry['id'][:8]}) reasons={entry['failure_reasons']}")
         return entry["id"]
@@ -290,6 +327,8 @@ class FeedbackStore:
             "failure_reasons": dict(sorted(all_reasons.items(), key=lambda x: x[1], reverse=True)),
             "json_mode_rate": json_rate,
             "recent_entries": recent_entries,
+            "ttl_days": FEEDBACK_TTL_DAYS,
+            "max_entries": MAX_FEEDBACK_ENTRIES,
         }
 
 

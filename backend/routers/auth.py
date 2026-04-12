@@ -2,13 +2,14 @@
 Router: 认证 — /auth/register, /auth/login
 """
 import uuid
-from fastapi import APIRouter, HTTPException, Depends, Header
+from fastapi import APIRouter, HTTPException, Depends, Header, Request
 from pydantic import BaseModel
 
 from auth import create_access_token, verify_token, hash_password, verify_password
 from state import users_db, users_by_email, get_users_db
 from data import save_users
 from config import PAPERS_DIR
+from rate_limit import check_login_rate_limit, _record_failure, clear_login_failures
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -77,9 +78,17 @@ async def register(req: RegisterRequest):
 @router.post("/login", response_model=TokenResponse)
 async def login(req: LoginRequest):
     email, password = req.email, req.password
+
+    # Rate limit check (by email to limit credential stuffing)
+    if check_login_rate_limit(email):
+        raise HTTPException(429, "登录尝试过于频繁，请 5 分钟后再试")
+
     user = users_by_email.get(email)
     if not user or not verify_password(password, user["password"]):
+        _record_failure(email)
         raise HTTPException(401, "邮箱或密码错误")
+
+    clear_login_failures(email)
     token = create_access_token({"sub": email, "user_id": user["user_id"]})
     return {
         "access_token": token,

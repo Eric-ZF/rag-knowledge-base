@@ -209,7 +209,15 @@ async def chat_stream(req: ChatRequest, user_info: tuple = Depends(get_current_u
                 pid = c["paper_id"]
                 if pid not in cite_set:
                     cite_set[pid] = {
+                        "paper_id": pid,
                         "title": c.get("title") or c.get("paper_id", "未知论文"),
+                        "authors": c.get("authors", ""),
+                        "year": c.get("year") or "",
+                        "journal": c.get("journal", ""),
+                        "section_type": c.get("section_type", ""),
+                        "section_title": c.get("section_title", ""),
+                        "page_number": c.get("page_number", 0),
+                        "content": (c.get("content") or c.get("text") or "")[:200],
                     }
             citations = list(cite_set.values())
             quality_warning = None

@@ -29,70 +29,84 @@ from data import get_paper
 # System Prompts（按场景分化）
 # ══════════════════════════════════════════════════════
 
-SYSTEM_PROMPT_DEFAULT = """你是一个专业的研究助手，基于论文片段回答学术问题。
+SYSTEM_PROMPT_DEFAULT = """你是一个专业、严谨的学术研究助手，基于论文片段（检索上下文）回答问题。
 
-回答格式（Markdown）：
-- 用 **加粗** 强调关键结论
-- 用 `> 引用块` 显示原文摘录
-- 列表呈现对比信息
-- 结论后用论文主题或页码标注来源
+【核心约束 — 违反将严重降分】
+1. **只基于检索到的片段内容回答**。如果检索结果中没有相关信息，必须明确说"当前论文库中没有相关内容"或"该问题在已有论文中证据不足"，绝对不能凭训练记忆编造答案。
+2. **禁止虚构参考文献**。不得在答案中写出具体作者名、年份、期刊名（如"根据Smith等人(2020)的研究"），除非检索片段中明确包含这些信息。
+3. **每个关键判断必须标注来源片段**。使用 `[片段N]` 格式标注，如 `CBAM对高碳行业有显著负面冲击 [片段3]`。
+4. **区分三种内容**：
+   - 【文献共识】：多个片段一致支持的结论
+   - 【文献分歧】：不同片段结论不一致时，说明分歧原因
+   - 【证据不足】：无法从片段中得出明确结论时，直接说明
+
+【格式要求】
+- Markdown 结构化输出，用 **加粗** 强调关键结论
+- 用 `> 引用原文` 显示片段原文（来自片段内容，不自行总结）
 - 禁止大段连续文字，用空行分隔段落
+- 用中文，学术语气，简洁专业
+- **禁止在答案中写思考过程**（不要写"让我分析"、"根据上下文"等）
+- **禁止输出原始参考文献列表**（不粘贴参考文献条目）
 
-规则：
-- 只基于论文内容回答，不编造
-- 证据不足时直接说"证据不足"
-- 完整回答，不要在中途停止
+【回答完整性】
+- 完整回答，不在中途停止
+- 如果片段内容不足，明确告知用户哪些方面信息缺失"""
+
+
+SYSTEM_PROMPT_RETRY = """你是一个专业、严谨的学术研究助手，基于论文片段回答问题。
+
+【核心约束】
+1. **只基于检索到的片段内容回答**，不得编造。
+2. **禁止虚构参考文献**，不得写出具体作者/年份/期刊。
+3. **每个关键判断必须用 `[片段N]` 标注来源**。
+4. **区分文献共识 vs 文献分歧 vs 证据不足**。
+5. **证据不足时必须明确说明**，不得留空白。
+
+【格式】
+- Markdown 结构化，**加粗**关键结论
+- `> 引用原文` 显示片段原文
 - 用中文，学术语气
-- **禁止在答案中写思考过程**（不要写"让我分析一下"、"根据某论文"这类分析过程）
-- **禁止输出原始参考文献**：不要在答案中粘贴文献标题、作者、期刊名等参考文献原文（这些信息来自 PDF 扫描文字，格式杂乱，直接标注论文主题或页码）"""
+- **禁止思考过程**，**禁止参考文献列表**
 
-SYSTEM_PROMPT_RETRY = """你是一个专业的研究助手，基于论文片段回答学术问题。上一轮回答质量不够好，请改进。
-
-回答格式（Markdown）：
-- 用 **加粗** 强调关键结论
-- 用 `> 引用块` 显示原文摘录
-- 列表呈现对比信息
-- 结论后用论文主题或页码标注来源
-- 禁止大段连续文字，用空行分隔段落
-
-重点改进要求：
-- 确保每个结论都有对应引用支撑，不要留空白
-- 如果原答案说"证据不足"，说明哪个方面仍然证据不足，不要空着不说
-- 完整回答，不要在中途停止
-- 用中文，学术语气
-- **禁止在答案中写思考过程**
-- **禁止输出原始参考文献**"""
+【重点改进】
+- 每个结论都要有 `[片段N]` 标注
+- 说"证据不足"时，必须说明哪个方面证据不足
+- 完整回答，不中途停止"""
 
 
 SYSTEM_PROMPT_METHODOLOGY = """你是一个专业的学术研究助手，专门分析论文中的方法论。
 
 任务：从检索到的论文片段中，识别并对比各论文的研究方法。
 
-输出格式（Markdown）：
+【核心约束】
+1. **只基于片段内容分析**，不得编造论文方法、模型、数据来源。
+2. **模型名、数据库名须出现在片段中才可引用**，不得凭记忆补充。
+3. **每个判断用 `[片段N]` 标注来源**。
+4. **证据不足时必须明确说明**，不得用"研究表明"等模糊表述编造。
 
-## 方法论分析
-
-### 1. 实证模型分布
-[列出使用了实证模型的论文，说明各用了什么模型（OLS/DID/CGE等）]
-
-### 2. 数据来源分类
-[按数据来源分组：官方统计数据/企业年报/调查数据/实验数据等]
-
-### 3. 理论基础
-[各论文依赖什么理论框架]
-
-### 4. 方法论对比
-[表格对比：论文 | 方法 | 数据 | 理论基础]
-
----
-结论后标注来源论文，片段编号见论文片段末尾。
-用中文，学术语气，完整输出。
-- **禁止输出原始参考文献**：不要在答案中粘贴文献标题、作者、期刊名等参考文献原文"""
+【格式】
+- Markdown 结构化，用表格对比方法 | 数据 | 理论基础
+- 用中文，学术语气
+- **禁止虚构作者/年份/期刊**，**禁止原始参考文献条目**
 
 
 SYSTEM_PROMPT_SURVEY = """你是一个资深学术研究员，擅长撰写高质量文献综述。
 
 任务：基于检索到的论文片段，写一篇结构化文献综述。
+
+【核心约束 — 违反将严重降分】
+1. **只基于检索到的片段内容撰写**，不得凭记忆补充未检索到的文献。
+2. **禁止虚构参考文献**：不得写出具体作者名、年份、期刊名，除非片段中明确包含。
+3. **每个判断必须用 `[片段N]` 标注来源**，未标注视为无效结论。
+4. **区分文献共识 vs 文献分歧 vs 证据不足**，不要混为一谈。
+5. **证据不足的方面必须明确说明**，不得编造结论填补空白。
+
+【格式】（严格遵循）
+- Markdown 结构化输出
+- 每个结论后用 `[片段N]` 标注来源
+- 用中文，学术语气，完整输出
+- **禁止虚构作者/年份/期刊**
+- **禁止输出原始参考文献条目**
 
 输出格式（严格遵循）：
 
@@ -134,19 +148,41 @@ SYSTEM_PROMPT_SURVEY = """你是一个资深学术研究员，擅长撰写高质
 # ══════════════════════════════════════════════════════
 
 def build_context(chunks: list[dict]) -> str:
-    """将检索到的 chunks 组装成 LLM 上下文（带片段编号）"""
+    """
+    将检索到的 chunks 组装成 LLM 上下文（带片段编号和元数据）。
+    格式：[片段1] 【论文标题】作者（年份）/期刊 | 章节标题
+          正文内容
+    """
     context_parts = []
     for i, chunk in enumerate(chunks, 1):
         title = chunk.get("title") or chunk.get("paper_id", "未知论文")
-        page = chunk.get('page_number', '')
-        prefix = f"（{title}{f' 第{page}页' if page else ''}）"
-        context_parts.append(f"{prefix}\n{chunk['content']}")
+        authors = chunk.get("authors", "")
+        year = chunk.get("year") or ""
+        journal = chunk.get("journal", "")
+        section_type = chunk.get("section_type", "body")
+        section_title = chunk.get("section_title", "")
+
+        # 构建来源行
+        source_parts = [title]
+        if authors:
+            source_parts.append(f"作者: {authors}")
+        if year:
+            source_parts.append(f"年份: {year}")
+        if journal:
+            source_parts.append(f"期刊: {journal}")
+        if section_type and section_type != "body":
+            source_parts.append(f"章节: {section_title or section_type}")
+
+        source_line = " | ".join(source_parts)
+        context_parts.append(f"[片段{i}] {source_line}\n{chunk['content']}")
+
     return "\n\n".join(context_parts)
 
 
 def build_survey_context(chunks: list[dict], theme: str) -> str:
     """
-    为文献综述构建上下文，按论文分组，同一论文的片段聚合在一起
+    为文献综述构建上下文，按论文分组，同一论文的片段聚合在一起。
+    显示完整元数据（作者、年份、期刊、章节）。
     """
     # 按 paper_id 分组
     by_paper: dict[str, list[dict]] = {}
@@ -156,19 +192,31 @@ def build_survey_context(chunks: list[dict], theme: str) -> str:
 
     sections = []
     for i, (pid, paper_chunks) in enumerate(by_paper.items(), 1):
-        title = paper_chunks[0].get("title") or pid
+        first = paper_chunks[0]
+        title = first.get("title") or pid
+        authors = first.get("authors", "")
+        year = first.get("year") or ""
+        journal = first.get("journal", "")
+
+        meta_parts = [title]
+        if authors:
+            meta_parts.append(f"作者: {authors}")
+        if year:
+            meta_parts.append(f"年份: {year}")
+        if journal:
+            meta_parts.append(f"期刊: {journal}")
+        meta_line = " | ".join(meta_parts)
+
         contents = "\n\n".join(
-            f"第{p.get('page_number','?')}页：{p['content']}"
+            f"[{p.get('section_type','正文')}] 第{p.get('page_number','?')}页：{p['content'][:300]}"
             for p in paper_chunks
         )
-        sections.append(
-            f"【论文：{title}】\n{contents}"
-        )
+        sections.append(f"【{meta_line}】\n{contents}")
 
     return (
         f"文献综述主题：{theme}\n\n"
         + "\n\n".join(sections)
-        + "\n\n提示：以上片段编号 [1]-[N] 对应下方论文，引用时使用片段编号。"
+        + "\n\n提示：以上按论文分组，引用时注明论文标题。"
     )
 
 
@@ -454,24 +502,39 @@ async def generate_answer(
     answer_text = _call_minimax(messages, max_tokens=max_tokens, temperature=0.3)
     answer_text = strip_thinking_tags(answer_text)
 
-    # 查 paper title（优先用 papers_db 里的标题，因为有完整信息）
-    paper_titles = {}
+    # 查 paper metadata（优先用 papers_db 里的标题，因为有完整信息）
+    paper_info = {}
     for c in chunks:
         pid = c["paper_id"]
-        if pid not in paper_titles:
+        if pid not in paper_info:
             p = get_paper(pid)
-            paper_titles[pid] = (p.get("title") if p else "") or c.get("title") or ""
+            paper_info[pid] = {
+                "title": (p.get("title") if p else "") or c.get("title") or "",
+                "authors": (p.get("authors") if p else "") or c.get("authors") or "",
+                "year": (p.get("year") if p else "") or c.get("year") or "",
+                "journal": (p.get("journal") if p else "") or c.get("journal") or "",
+            }
 
-    citations = [
-        {
-            "paper_id": c["paper_id"],
-            "title": paper_titles.get(c["paper_id"], ""),
-            "chunk_index": c["chunk_index"],
+    # 去重：同一篇论文只显示一条引用（用第一条出现的 chunk 作为内容示例）
+    seen_pids = set()
+    citations = []
+    for c in chunks:
+        pid = c["paper_id"]
+        if pid in seen_pids:
+            continue
+        seen_pids.add(pid)
+        info = paper_info.get(pid, {})
+        citations.append({
+            "paper_id": pid,
+            "title": info.get("title", ""),
+            "authors": info.get("authors", ""),
+            "year": info.get("year", ""),
+            "journal": info.get("journal", ""),
+            "section_type": c.get("section_type", ""),
+            "section_title": c.get("section_title", ""),
             "page_number": c.get("page_number", 0),
             "content": (c.get("content") or c.get("text") or ""),
-        }
-        for c in chunks
-    ]
+        })
 
     # 对非迭代版本也做一次快速评分
     try:
@@ -602,22 +665,42 @@ def evaluate_answer(question: str, answer: str, chunks: list[dict]) -> dict:
 
 
 def _build_citations(chunks: list[dict]) -> list[dict]:
-    """从 chunks 构建带 paper title 的 citations"""
-    paper_titles = {}
+    """
+    从 chunks 构建 citations，同一篇论文只出现一条。
+    包含：标题、作者、年份、期刊、章节、页码、内容示例。
+    """
+    paper_info = {}
     for c in chunks:
         pid = c["paper_id"]
-        if pid not in paper_titles:
+        if pid not in paper_info:
             p = get_paper(pid)
-            paper_titles[pid] = (p.get("title") if p else "") or c.get("title") or ""
-    return [
-        {
-            "paper_id": c["paper_id"],
-            "title": paper_titles.get(c["paper_id"], ""),
-            "chunk_index": c["chunk_index"],
-            "content": (c.get("content") or c.get("text") or ""),
-        }
-        for c in chunks
-    ]
+            paper_info[pid] = {
+                "title": (p.get("title") if p else "") or c.get("title") or "",
+                "authors": (p.get("authors") if p else "") or c.get("authors", ""),
+                "year": str((p.get("year") if p else "") or c.get("year") or ""),
+                "journal": (p.get("journal") if p else "") or c.get("journal", ""),
+            }
+
+    seen = set()
+    citations = []
+    for c in chunks:
+        pid = c["paper_id"]
+        if pid in seen:
+            continue
+        seen.add(pid)
+        info = paper_info.get(pid, {})
+        citations.append({
+            "paper_id": pid,
+            "title": info.get("title", ""),
+            "authors": info.get("authors", ""),
+            "year": info.get("year", ""),
+            "journal": info.get("journal", ""),
+            "section_type": c.get("section_type", ""),
+            "section_title": c.get("section_title", ""),
+            "page_number": c.get("page_number", 0),
+            "content": (c.get("content") or c.get("text") or "")[:300],
+        })
+    return citations
 
 
 def _enrich_chunks(chunks: list[dict]) -> list[dict]:

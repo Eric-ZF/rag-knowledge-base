@@ -767,9 +767,14 @@ async def search_chunks(
     top_k: int = 10,
     openai_api_key: str = "",
     persist_directory: str = CHROMADB_DIR,
+    section_filter: str | None = None,
 ) -> list[dict]:
     """
     语义检索：向量化 → ChromaDB → 混合检索 → 返回相关 chunks
+
+    Args:
+        section_filter: 可选，如 "introduction"/"methodology"/"conclusion"，
+                       只召回匹配 section_type 的 chunks
     """
     safe_collection_name = re.sub(r"[^a-zA-Z0-9_]", "_", collection_name)
     embedding_fn = get_chroma_embedding_fn()
@@ -780,20 +785,33 @@ async def search_chunks(
         persist_directory=persist_directory,
     )
 
-    hybrid_results = hybrid_search(vectorstore, query, embedding_fn, k=top_k * 3)
+    # 扩大召回倍数，确保过滤后仍有足够候选
+    retrieve_k = top_k * 5 if section_filter else top_k * 3
+    hybrid_results = hybrid_search(vectorstore, query, embedding_fn, k=retrieve_k)
 
     chunks = []
-    for item in hybrid_results[:top_k]:
+    for item in hybrid_results:
         r = item["doc"]
+        chunk_section = r.metadata.get("section_type", "body")
+        if section_filter and chunk_section != section_filter:
+            continue
         chunks.append({
             "content": r.page_content,
             "paper_id": r.metadata.get("paper_id", ""),
+            "title": r.metadata.get("title", ""),
+            "authors": r.metadata.get("authors", ""),
+            "year": r.metadata.get("year"),
+            "journal": r.metadata.get("journal", ""),
+            "doi": r.metadata.get("doi", ""),
             "chunk_type": r.metadata.get("chunk_type", "recall"),
-            "section_type": r.metadata.get("section_type", "body"),
+            "section_type": chunk_section,
+            "section_title": r.metadata.get("section_title", ""),
             "chunk_index": r.metadata.get("chunk_index", 0),
             "page_number": r.metadata.get("page_number", 0),
             "text": r.metadata.get("text", ""),
             "combined_score": round(item.get("combined_score", item.get("vector_score", 1.0)), 3),
         })
+        if len(chunks) >= top_k:
+            break
 
     return chunks
