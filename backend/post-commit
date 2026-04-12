@@ -1,0 +1,8 @@
+#!/bin/bash
+# Backend 代码有变化时自动重启（通过 systemd）
+systemctl is-active rag-backend > /dev/null 2>&1 && \
+    echo "[post-commit] Backend restarting..." && \
+    systemctl restart rag-backend && \
+    sleep 2 && \
+    systemctl status rag-backend --no-pager | grep "Active:" || \
+    echo "[post-commit] Backend restart skipped (not running or error)"
