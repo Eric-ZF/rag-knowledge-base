@@ -168,75 +168,105 @@ def _extract_pdf_metadata(result) -> dict:
     return meta
 
 
-def parse_pdf_docling(pdf_path: str) -> tuple[list[Document], str, dict]:
+def _is_garbled_text(text: str) -> bool:
     """
-    使用 Docling 2.84.0 解析 PDF，返回结构化 Documents + content hash + PDF 元数据。
-
-    Docling 2.84.0 API：
-    - result.pages: list[Page]
-    - page.assembled.elements: list[PageElement]
-      其中 PageElement = TextElement | Table | FigureElement | ContainerElement
-    - TextElement.text: str
-    - Table.table_cells: list[TableCell] (含 row/col offset)
-
-    Returns:
-        documents: List[Document]，每个段落一个 Document
-        content_hash: PDF 全文 SHA256（用于去重检测）
-        pdf_metadata: dict {title, authors, year, doi, journal, publisher}
+    判断文本是否为乱码（Docling/RapidOCR 解析失败产物）。
+    对中文 PDF：CJK 字符占比 < 5% 且文本偏短 → 判定为乱码。
+    对英文 PDF：isprintable 比例 < 30% → 乱码。
     """
-    from docling.document_converter import DocumentConverter
+    if not text or len(text.strip()) < 20:
+        return True
+    cjk_count = sum(1 for c in text if '一' <= c <= '鿿')
+    cjk_ratio = cjk_count / max(len(text), 1)
+    if cjk_ratio < 0.05 and cjk_count < 10:
+        return True
+    valid = sum(1 for c in text if c.isprintable())
+    if valid / len(text) < 0.30:
+        return True
+    return False
 
-    converter = DocumentConverter()
-    result = converter.convert(source=pdf_path)
+
+def _extract_section_title_from_text(text: str) -> str:
+    """
+    从段落首行提取章节标题（如 '1. 引言'、'二，研究方法'）。
+    返回干净标题字符串，找不到返回空字符串。
+    """
+    first_line = text.strip().split('\n')[0].strip()
+    if len(first_line) > 80 or len(first_line) < 2:
+        return ""
+    if re.match(r'^[\d\u4e00-\u9fff\u3000-\u303f\uff00-\uffef一二三四五六七八九十]+[.、)\s]', first_line):
+        return first_line
+    if re.match(r'^[A-Z][A-Z\s\-]+$', first_line[:30]):
+        return first_line
+    return ""
+
+
+def parse_pdf_plumber(pdf_path: str) -> tuple[list[Document], str, dict]:
+    """
+    使用 pdfplumber 解析 PDF（降级方案，保留原始中文文本）。
+    优点：完全不依赖 OCR，提取干净的 PDF 原文。
+    """
+    import pdfplumber
 
     all_parts = []
     full_text_parts = []
+    pdf_meta = {"title": "", "authors": "", "year": None, "doi": "", "journal": "", "publisher": ""}
 
-    # ── 1. 正文页面文本（docling 2.84.0 API）────────────
-    table_count = 0
-    for page_num, page in enumerate(result.pages, start=1):
-        page_elements = []
-        assembled = getattr(page, "assembled", None)
+    with pdfplumber.open(pdf_path) as pdf:
+        doc_info = pdf.metadata or {}
+        pdf_meta["title"] = doc_info.get("Title", "") or ""
+        authors = doc_info.get("Author", "") or ""
+        pdf_meta["authors"] = authors if isinstance(authors, str) else "; ".join(str(a) for a in authors)
+        pdf_meta["publisher"] = doc_info.get("Producer", "") or ""
 
-        if assembled is not None and hasattr(assembled, "elements"):
-            page_elements = assembled.elements or []
+        table_count = 0
+        current_section_title = ""
 
-        # 从 TextElement 提取文本
-        body_texts = []
-        for elem in page_elements:
-            if elem.__class__.__name__ == "TextElement":
-                text = getattr(elem, "text", None)
-                if text and text.strip():
-                    body_texts.append(text.strip())
-            elif elem.__class__.__name__ == "Table":
-                # 表格：转 Markdown
-                md = _table_to_markdown(elem)
-                if md:
+        for page_num, page in enumerate(pdf.pages, start=1):
+            text = page.extract_text() or ""
+            if not text.strip():
+                continue
+
+            # 提取表格
+            tables = page.extract_tables()
+            for t_idx, table in enumerate(tables):
+                if table and len(table) > 1:
                     table_count += 1
+                    md_lines = []
+                    md_lines.append("| " + " | ".join(str(c or "").strip() for c in table[0]) + " |")
+                    md_lines.append("|" + "|".join(["---"] * len(table[0])) + "|")
+                    for row in table[1:]:
+                        md_lines.append("| " + " | ".join(str(c or "").strip() for c in row) + " |")
+                    md_text = "\n".join(md_lines)
                     all_parts.append({
-                        "text": f"[表格 {table_count}]\n{md}",
+                        "text": md_text,
                         "page_number": page_num,
                         "section_type": "table",
-                        "source": "table",
+                        "source": "plumber",
+                        "section_title": current_section_title,
                         "table_index": table_count,
                     })
-                    full_text_parts.append(md)
+                    full_text_parts.append(md_text)
 
-        # 合并同一页的 body 文本，按空行分段
-        page_combined = "\n\n".join(body_texts)
-        if page_combined.strip():
-            paragraphs = [p.strip() for p in page_combined.split("\n\n") if p.strip()]
+            # 按段落拆分
+            paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
             for para in paragraphs:
                 section_type = _classify_section(para, page_num)
+                section_title = _extract_section_title_from_text(para)
+                if section_title:
+                    current_section_title = section_title
                 all_parts.append({
                     "text": para,
                     "page_number": page_num,
                     "section_type": section_type,
-                    "source": "body",
+                    "source": "plumber",
+                    "section_title": current_section_title,
                 })
                 full_text_parts.append(para)
 
-    # ── 2. 生成 Documents ───────────────────────────────
+    if not full_text_parts:
+        raise ValueError(f"pdfplumber 解析失败，PDF 无可提取文本: {pdf_path}")
+
     documents = []
     for i, part in enumerate(all_parts):
         documents.append(Document(
@@ -245,21 +275,107 @@ def parse_pdf_docling(pdf_path: str) -> tuple[list[Document], str, dict]:
                 "page_number": part["page_number"],
                 "section_type": part["section_type"],
                 "source": part["source"],
+                "section_title": part.get("section_title", ""),
                 "chunk_index": i,
                 **{k: v for k, v in part.items()
-                   if k not in ("text", "page_number", "section_type", "source")},
+                   if k not in ("text", "page_number", "section_type", "source", "section_title")},
             }
         ))
 
-    # ── 3. Content hash ─────────────────────────────────
     content_hash = hashlib.sha256(
         ("|||".join(full_text_parts)).encode("utf-8")
     ).hexdigest()
+    return documents, content_hash, pdf_meta
 
-    # ── 4. PDF 元数据 ────────────────────────────────────
+
+def parse_pdf_with_fallback(pdf_path: str) -> tuple[list[Document], str, dict]:
+    """
+    解析 PDF，优先使用 Docling（表格/结构化最强）。
+    若解析质量过低（乱码比例 > 50%），自动降级到 pdfplumber。
+    同时检测章节标题，存入 metadata['section_title']。
+    """
+    # ── 1. 先用 Docling ──────────────────────────────
+    from docling.document_converter import DocumentConverter
+    converter = DocumentConverter()
+    result = converter.convert(source=pdf_path)
+
+    all_parts = []
+    full_text_parts = []
+    table_count = 0
+    current_section_title = ""
+
+    for page_num, page in enumerate(result.pages, start=1):
+        page_elements = []
+        assembled = getattr(page, "assembled", None)
+        if assembled is not None and hasattr(assembled, "elements"):
+            page_elements = assembled.elements or []
+
+        body_texts = []
+        for elem in page_elements:
+            if elem.__class__.__name__ == "TextElement":
+                text = getattr(elem, "text", None)
+                if text and text.strip():
+                    body_texts.append(text.strip())
+            elif elem.__class__.__name__ == "Table":
+                md = _table_to_markdown(elem)
+                if md:
+                    table_count += 1
+                    all_parts.append({
+                        "text": md,
+                        "page_number": page_num,
+                        "section_type": "table",
+                        "source": "docling",
+                        "section_title": current_section_title,
+                        "table_index": table_count,
+                    })
+                    full_text_parts.append(md)
+
+        page_combined = "\n\n".join(body_texts)
+        if page_combined.strip():
+            paragraphs = [p.strip() for p in page_combined.split("\n\n") if p.strip()]
+            for para in paragraphs:
+                section_type = _classify_section(para, page_num)
+                section_title = _extract_section_title_from_text(para)
+                if section_title:
+                    current_section_title = section_title
+                all_parts.append({
+                    "text": para,
+                    "page_number": page_num,
+                    "section_type": section_type,
+                    "source": "docling",
+                    "section_title": current_section_title,
+                })
+                full_text_parts.append(para)
+
+    # ── 2. 质量检测 ─────────────────────────────────
+    readable_count = sum(1 for t in full_text_parts if not _is_garbled_text(t))
+    quality_ratio = readable_count / max(len(full_text_parts), 1)
+    logger.info(f"[parse] Docling 质量：{readable_count}/{len(full_text_parts)} 段可读（阈值 50%）")
+
+    if quality_ratio < 0.50:
+        logger.warning(f"[parse] Docling 质量低于 50%（{quality_ratio:.1%}），降级到 pdfplumber")
+        return parse_pdf_plumber(pdf_path)
+
+    # ── 3. 生成 Documents ───────────────────────────────
+    documents = []
+    for i, part in enumerate(all_parts):
+        documents.append(Document(
+            page_content=part["text"],
+            metadata={
+                "page_number": part["page_number"],
+                "section_type": part["section_type"],
+                "source": part["source"],
+                "section_title": part.get("section_title", ""),
+                "chunk_index": i,
+                **{k: v for k, v in part.items()
+                   if k not in ("text", "page_number", "section_type", "source", "section_title")},
+            }
+        ))
+
+    content_hash = hashlib.sha256(
+        ("|||".join(full_text_parts)).encode("utf-8")
+    ).hexdigest()
     pdf_meta = _extract_pdf_metadata(result)
-    logger.debug(f"PDF metadata: title={pdf_meta.get('title','')[:40]} authors={pdf_meta.get('authors','')[:30]} year={pdf_meta.get('year')}")
-
     return documents, content_hash, pdf_meta
 
 
@@ -385,7 +501,7 @@ async def process_pdf(
 
     # 1. Docling 解析 PDF
     logger.info(f"[{paper_id}] 开始 Docling 解析 PDF...")
-    raw_docs, content_hash, pdf_meta = parse_pdf_docling(pdf_path)
+    raw_docs, content_hash, pdf_meta = parse_pdf_with_fallback(pdf_path)
     logger.info(f"[{paper_id}] Docling 解析完成：{len(raw_docs)} 个原始单元（正文+表格+参考文献）")
 
     if not raw_docs:
