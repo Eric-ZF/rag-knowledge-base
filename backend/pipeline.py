@@ -9,6 +9,9 @@ Embedding: jina-embeddings-v2-base-zh（1024维，Jina AI 云端 API，无需本
   - Evidence Chunk（证据块）：150-350 tokens，按单段/结论/表格行切分，最小可引用单元
 """
 
+import logging
+logger = logging.getLogger(__name__)
+
 import hashlib
 import os
 import re

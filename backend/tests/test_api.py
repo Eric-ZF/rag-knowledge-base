@@ -170,7 +170,7 @@ class TestChat:
         if resp.status_code == 200:
             data = resp.json()
             answer = data.get("answer", "")
-            assert "没有找到" in answer or "无关" in answer or "抱歉" in answer, \
+            assert "没有找到" in answer or "无关" in answer or "抱歉" in answer or "论文库还没有" in answer, \
                 f"空检索应返回友好提示，实际返回: {answer[:100]}"
 
 

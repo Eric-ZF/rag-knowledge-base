@@ -614,7 +614,6 @@ def _build_citations(chunks: list[dict]) -> list[dict]:
             "paper_id": c["paper_id"],
             "title": paper_titles.get(c["paper_id"], ""),
             "chunk_index": c["chunk_index"],
-            "page_number": c.get("page_number", 0),
             "content": (c.get("content") or c.get("text") or ""),
         }
         for c in chunks
