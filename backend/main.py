@@ -1,0 +1,577 @@
+"""
+Phase 0.6 — FastAPI 入口
+papers_db + users_db 全部持久化为 JSON，重启不丢失。
+"""
+
+import chromadb, os, re, uuid, json, asyncio
+from datetime import datetime
+from pathlib import Path
+from typing import Generator, Literal
+
+from dotenv import load_dotenv
+load_dotenv()
+
+from fastapi import FastAPI, HTTPException, UploadFile, File, Depends, Header, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
+
+from auth import create_access_token, verify_token, hash_password, verify_password
+from config import validate_minimax_chat_config, MINIMAX_API_KEY, MINIMAX_GROUP_ID, CHROMADB_DIR, PAPERS_DIR
+from data import (
+    init_papers, init_users,
+    get_paper, upsert_paper, update_paper, delete_paper,
+    get_user_papers, get_papers_db,
+)
+from pipeline import process_pdf, search_chunks
+from chat import generate_answer
+
+# ─── 启动验证 ─────────────────────────────────────────
+try:
+    validate_minimax_chat_config()
+except RuntimeError as e:
+    print(f"⚠️  {e}")
+
+# ─── 数据层初始化（从 JSON 恢复）────────────────────
+init_papers()
+users_db, users_by_email = init_users()
+
+# ─── Lifespan：启动时预加载 embedding 模型 ─────────────────
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # 写启动标记，watchdog 据此判断是否在 startup 中
+    Path("/tmp/backend_starting").write_text("1")
+    print("📥 预加载 Embedding 模型...")
+    from pipeline import get_embedding_model
+    _ = get_embedding_model()
+    Path("/tmp/backend_starting").write_text("0")  # startup 完成
+    print("✅ Embedding 模型就绪，uvicorn 开始接受请求")
+    yield
+    # shutdown 清理（暂无）
+    Path("/tmp/backend_starting").write_text("0")
+
+# ─── SSE 索引进度（全局事件总线）────────────────────
+# paper_id → {"stage": str, "progress": float, "chunks_count": int|None, "error": str|None}
+processing_events: dict[str, dict] = {}
+
+# ─── FastAPI ─────────────────────────────────────────
+app = FastAPI(
+    title="RAG 学术知识库 — Phase 0.6",
+    version="0.6.0",
+    lifespan=lifespan,
+)
+
+
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ─── Pydantic 模型 ────────────────────────────────────
+class ChatRequest(BaseModel):
+    question: str
+    collection_name: str | None = None
+    top_k: int = 8
+    mode: Literal["default", "methodology", "survey"] = "default"
+    paper_ids: list[str] | None = None  # 可选，限定检索范围
+
+class ChatResponse(BaseModel):
+    answer: str
+    citations: list[dict]
+    meta: dict = {}
+
+class PaperUploadResponse(BaseModel):
+    paper_id: str
+    title: str
+    status: str
+
+class RegisterRequest(BaseModel):
+    email: str
+    password: str
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+# ─── 健康检查 ─────────────────────────────────────────
+@app.get("/health")
+async def health():
+    return {
+        "status": "ok",
+        "phase": "phase0.6",
+        "model": "MiniMax-M2 + local embedding",
+        "minimax_configured": bool(MINIMAX_API_KEY and MINIMAX_GROUP_ID),
+        "timestamp": datetime.utcnow().isoformat(),
+    }
+
+
+# ─── 认证 ─────────────────────────────────────────────
+@app.post("/auth/register")
+async def register(req: RegisterRequest):
+    email, password = req.email, req.password
+    if email in users_by_email:
+        raise HTTPException(400, "邮箱已注册")
+    user_id = str(uuid.uuid4())
+    collection_name = f"user_{user_id.replace('-', '_')}"
+    user_record = {
+        "email": email,
+        "user_id": user_id,
+        "password": hash_password(password),  # bcrypt 哈希存储
+        "plan": "free",
+        "collection": collection_name,
+    }
+    users_db[user_id] = user_record
+    users_by_email[email] = user_record
+    _save_users()
+    return {"user_id": user_id, "collection": collection_name}
+
+
+@app.post("/auth/login")
+async def login(req: LoginRequest):
+    email, password = req.email, req.password
+    user = users_by_email.get(email)
+    if not user or not verify_password(password, user["password"]):
+        raise HTTPException(401, "邮箱或密码错误")
+    token = create_access_token({"sub": email, "user_id": user["user_id"]})
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "collection": user["collection"],
+        "plan": user["plan"],
+    }
+
+
+def _save_users() -> None:
+    from data import _save_users as _su
+    _su(users_db)
+
+
+def get_current_user(authorization: str = Header(None)):
+    if not authorization:
+        raise HTTPException(401, "未提供认证信息")
+    try:
+        scheme, token = authorization.split()
+        if scheme.lower() != "bearer":
+            raise HTTPException(401, "无效的认证方式")
+        payload = verify_token(token)
+        email, user_id = payload["sub"], payload.get("user_id")
+        if not user_id or user_id not in users_db:
+            raise HTTPException(401, "用户不存在")
+        return user_id, users_db[user_id]
+    except (ValueError, KeyError):
+        raise HTTPException(401, "无效的 Token")
+
+
+# ─── 后台任务：处理 PDF ───────────────────────────────
+def _process_pdf_background(paper_id: str, tmp_path: str, collection: str, title: str):
+    def emit(stage: str, progress: float, **kwargs):
+        """向 SSE 总线推送进度"""
+        event = {"stage": stage, "progress": progress, "paper_id": paper_id, **kwargs}
+        processing_events[paper_id] = event
+
+    try:
+        import asyncio
+        emit("parsing", 0.1)
+        result = asyncio.run(process_pdf(
+            pdf_path=tmp_path,
+            paper_id=paper_id,
+            collection_name=collection,
+            title=title,
+            progress_callback=emit,
+        ))
+        # 提取 PDF 元数据，用 Docling 解析出的标题覆盖文件名标题
+        pdf_meta = result.get("pdf_metadata", {}) or {}
+        display_title = pdf_meta.get('title') or title
+        update_fields = {
+            "status": "ready",
+            "chunks_count": result["chunks_count"],
+            "title": display_title,
+            "authors": pdf_meta.get('authors', ''),
+            "year": pdf_meta.get('year'),
+            "journal": pdf_meta.get('journal', ''),
+            "doi": pdf_meta.get('doi', ''),
+        }
+        update_paper(paper_id, **update_fields)
+        emit("complete", 1.0, chunks_count=result["chunks_count"])
+        print(f"[{paper_id}] ✅ 索引完成，{result['chunks_count']} chunks, title={display_title[:40]}")
+    except Exception as e:
+        update_paper(paper_id, status="error", error=str(e))
+        emit("error", 0, error=str(e))
+        print(f"[{paper_id}] ❌ 索引失败: {e}")
+    finally:
+        Path(tmp_path).unlink(missing_ok=True)
+        # 处理完成后延迟清理事件（给 SSE 留时间推送）
+        import threading
+        def cleanup():
+            import time; time.sleep(30)
+            processing_events.pop(paper_id, None)
+        threading.Thread(target=cleanup, daemon=True).start()
+
+
+# ─── PDF 上传 ────────────────────────────────────────
+@app.post("/papers/upload", response_model=PaperUploadResponse)
+async def upload_paper(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    user_info: tuple = Depends(get_current_user),
+):
+    user_id, user = user_info
+    if not MINIMAX_API_KEY or not MINIMAX_GROUP_ID:
+        raise HTTPException(503, "MiniMax API 未配置")
+    if not file.filename.endswith(".pdf"):
+        raise HTTPException(400, "只支持 PDF 文件")
+
+    MAX_FILE_SIZE = 50 * 1024 * 1024
+    content = await file.read()
+    if len(content) > MAX_FILE_SIZE:
+        raise HTTPException(413, f"文件大小超过限制（最大 50MB），当前: {len(content)//1024//1024}MB")
+
+    if user["plan"] == "free" and len(user["papers"]) >= 20:
+        raise HTTPException(429, "免费用户论文上限 20 篇")
+
+    # ── 内容去重：计算 SHA256 并检查是否已上传 ─────────
+    import hashlib, pdfplumber
+    tmp_check_path = f"/tmp/_check_{uuid.uuid4()}.pdf"
+    Path(tmp_check_path).write_bytes(content)
+    try:
+        texts = []
+        with pdfplumber.open(tmp_check_path) as pdf:
+            for page in pdf.pages:
+                t = page.extract_text()
+                if t and t.strip():
+                    texts.append(t.strip())
+        content_hash = hashlib.sha256(("|||".join(texts)).encode("utf-8")).hexdigest()
+    finally:
+        Path(tmp_check_path).unlink(missing_ok=True)
+
+    # 检查是否已上传过相同内容（content_hash 精确匹配）
+    existing = [
+        (pid, p) for pid, p in get_papers_db().items()
+        if p.get("user_id") == user_id and p.get("content_hash") == content_hash
+    ]
+    if existing:
+        dup_pid, dup_info = existing[0]
+        dup_title = dup_info.get("title", "")
+        dup_status = dup_info.get("status", "")
+        if dup_status in ("error", "failed", "ready"):
+            # 已有相同论文：若状态为 error/failed 则允许强制重新上传
+            if dup_status in ("error", "failed"):
+                print(f"[{dup_pid}] 检测到失败的论文记录，清除后重新上传...")
+                # 从用户列表移除
+                if dup_pid in user["papers"]:
+                    user["papers"].remove(dup_pid)
+                    users_db.save()
+                # 删除 ChromaDB chunks（如有）
+                try:
+                    col_del = client.get_collection(user["collection"])
+                    col_del.delete(ids=[mid for mid in col_del._collection.get()["ids"] if mid.startswith(dup_pid)])
+                except Exception:
+                    pass
+                # 删除 papers_db entry
+                delete_paper(dup_pid)
+            else:
+                raise HTTPException(409, f"该论文已上传过且索引成功：'{dup_title}'（ID: {dup_pid[:8]}...），请勿重复上传")
+        else:
+            raise HTTPException(409, f"该论文正在处理中，请稍后再试（ID: {dup_pid[:8]}）")
+
+    paper_id = str(uuid.uuid4())
+    title = file.filename.replace(".pdf", "").strip()
+
+    # PDF 持久化存储（不在 /tmp，避免重启丢失）
+    os.makedirs(PAPERS_DIR, exist_ok=True)
+    pdf_path = f"{PAPERS_DIR}/{paper_id}.pdf"
+    Path(pdf_path).write_bytes(content)
+
+    # 同时保留一份在 /tmp 供后台任务处理（处理完会删除 /tmp 那份）
+    tmp_path = f"/tmp/{paper_id}.pdf"
+    Path(tmp_path).write_bytes(content)
+
+    upsert_paper(paper_id, {
+        "paper_id": paper_id,
+        "user_id": user_id,
+        "title": title,
+        "status": "processing",
+        "chunks_count": None,
+        "content_hash": content_hash,
+        "collection": user["collection"],
+        "pdf_path": pdf_path,  # 持久化路径，供 PDF 下载 endpoint 使用
+        "error": None,
+        "created_at": datetime.utcnow().isoformat(),
+    })
+    user["papers"].append(paper_id)
+    _save_users()
+
+    background_tasks.add_task(_process_pdf_background, paper_id, tmp_path, user["collection"], title)
+    return PaperUploadResponse(paper_id=paper_id, title=title, status="processing")
+
+
+@app.get("/papers/{paper_id}/events")
+async def paper_events(paper_id: str, user_info: tuple = Depends(get_current_user)):
+    """SSE 实时推送论文索进进度"""
+    _, user = user_info
+    p = get_paper(paper_id)
+    if not p or p["user_id"] != user_info[0]:
+        raise HTTPException(404, "论文不存在")
+
+    async def event_generator():
+        # 已完成的直接发
+        if p["status"] == "ready":
+            yield f"data: {json.dumps({'stage':'complete','progress':1.0,'paper_id':paper_id,'chunks_count':p.get('chunks_count')})}\n\n"
+            return
+        if p["status"] == "error":
+            yield f"data: {json.dumps({'stage':'error','progress':0,'paper_id':paper_id,'error':p.get('error','')})}\n\n"
+            return
+
+        # 轮询 processing_events 直到完成
+        for _ in range(300):  # 最多 5 分钟
+            event = processing_events.get(paper_id)
+            if event:
+                yield f"data: {json.dumps(event)}\n\n"
+                if event["stage"] in ("complete", "error"):
+                    break
+            await asyncio.sleep(1)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.get("/papers/{paper_id}/status")
+async def paper_status(paper_id: str, user_info: tuple = Depends(get_current_user)):
+    _, user = user_info
+    p = get_paper(paper_id)
+    if not p or p["user_id"] != user_info[0]:
+        raise HTTPException(404, "论文不存在")
+    return {
+        "paper_id": paper_id,
+        "title": p["title"],
+        "status": p["status"],
+        "chunks_count": p.get("chunks_count"),
+        "error": p.get("error"),
+    }
+
+
+@app.get("/papers/{paper_id}/pdf")
+async def get_paper_pdf(paper_id: str, user_info: tuple = Depends(get_current_user)):
+    """下载论文 PDF 文件，支持浏览器 PDF 插件直接预览"""
+    _, user = user_info
+    p = get_paper(paper_id)
+    if not p or p["user_id"] != user_info[0]:
+        raise HTTPException(404, "论文不存在")
+    pdf_path = p.get("pdf_path")
+    if not pdf_path or not Path(pdf_path).exists():
+        raise HTTPException(404, "PDF 文件不存在，可能尚未处理完成")
+    from fastapi.responses import FileResponse
+    return FileResponse(
+        path=pdf_path,
+        filename=f"{p['title']}.pdf",
+        media_type="application/pdf",
+    )
+
+
+@app.get("/papers")
+async def list_papers(user_info: tuple = Depends(get_current_user)):
+    _, user = user_info
+    results = []
+    for pid in user["papers"]:
+        p = get_paper(pid)
+        if not p:
+            continue
+        # 从 ChromaDB 查询实际 chunk 数量（papers_db 的 chunks_count 可能为 None）
+        try:
+            import chromadb
+            client = chromadb.PersistentClient(path=CHROMADB_DIR)
+            safe_name = re.sub(r"[^a-zA-Z0-9_]", "_", p["collection"])
+            col = client.get_collection(safe_name)
+            ids = col.get(where={"paper_id": pid})["ids"]
+            count = len(ids) if ids else 0
+        except Exception:
+            count = p.get("chunks_count") or 0
+        results.append({
+            "paper_id": pid,
+            "title": p.get("title") or "",
+            "authors": p.get("authors") or "",
+            "year": p.get("year"),
+            "journal": p.get("journal") or "",
+            "doi": p.get("doi") or "",
+            "status": p.get("status") or "unknown",
+            "chunks_count": count,
+            "created_at": p.get("created_at", ""),
+            "deletable": p.get("status") != "processing",
+        })
+    return results
+
+
+@app.delete("/papers/{paper_id}")
+async def delete_paper(paper_id: str, user_info: tuple = Depends(get_current_user)):
+    user_id, user = user_info
+    p = get_paper(paper_id)
+    if not p or p["user_id"] != user_id:
+        raise HTTPException(404, "论文不存在")
+    if p["status"] == "processing":
+        raise HTTPException(409, "论文正在处理中，无法删除")
+
+    # 从 ChromaDB 删除 chunks
+    try:
+        import chromadb
+        client = chromadb.PersistentClient(path=CHROMADB_DIR)
+        safe_name = re.sub(r"[^a-zA-Z0-9_]", "_", p["collection"])
+        col = client.get_collection(safe_name)
+        results = col.get(where={"paper_id": paper_id})
+        if results["ids"]:
+            col.delete(ids=results["ids"])
+            print(f"[{paper_id}] 🗑️ 删除 {len(results['ids'])} chunks")
+    except Exception as e:
+        print(f"[{paper_id}] ⚠️ ChromaDB 删除失败: {e}")
+
+    user["papers"].remove(paper_id)
+    _save_users()
+    delete_paper(paper_id)
+
+    # 删除持久化的 PDF 文件
+    pdf_path = p.get("pdf_path")
+    if pdf_path and Path(pdf_path).exists():
+        Path(pdf_path).unlink()
+        print(f"[{paper_id}] 🗑️ PDF 文件已删除: {pdf_path}")
+
+    return {"ok": True, "paper_id": paper_id, "title": p["title"]}
+
+
+# ─── 耗时拆解工具 ─────────────────────────────────────
+import time, functools
+
+def _timed(label: str, logger=print):
+    """装饰器：自动打印函数执行时间"""
+    def deco(func):
+        @functools.wraps(func)
+        async def async_wrapper(*args, **kwargs):
+            t0 = time.monotonic()
+            result = await func(*args, **kwargs)
+            elapsed = (time.monotonic() - t0) * 1000
+            logger(f"[⏱️ {label}] {elapsed:.0f}ms")
+            return result
+        @functools.wraps(func)
+        def sync_wrapper(*args, **kwargs):
+            t0 = time.monotonic()
+            result = func(*args, **kwargs)
+            elapsed = (time.monotonic() - t0) * 1000
+            logger(f"[⏱️ {label}] {elapsed:.0f}ms")
+            return result
+        import asyncio
+        if asyncio.iscoroutinefunction(func):
+            return async_wrapper
+        return sync_wrapper
+    return deco
+
+
+# ─── RAG 问答 ─────────────────────────────────────────
+@app.post("/chat", response_model=ChatResponse)
+async def chat(req: ChatRequest, user_info: tuple = Depends(get_current_user)):
+    _, user = user_info
+    if not MINIMAX_API_KEY or not MINIMAX_GROUP_ID:
+        raise HTTPException(503, "MiniMax API 未配置")
+
+    collection = req.collection_name or user["collection"]
+
+    # ── 计时开始 ─────────────────────────────────────
+    t0 = time.monotonic()
+    log_timing = lambda msg: print(f"[/chat {req.question[:30]}...] {msg}")
+
+    # 只查询 status=ready 的论文
+    ready = [
+        pid for pid in user["papers"]
+        if (p := get_paper(pid)) and p["status"] == "ready"
+    ]
+    if not ready:
+        return ChatResponse(
+            answer="你的论文库还没有已索引的论文，请先上传 PDF 并等待索引完成。",
+            citations=[],
+            meta={"mode": req.mode, "paper_count": 0, "chunk_count": 0},
+        )
+
+    # paper_ids 过滤：如果指定了范围，只保留在范围内的
+    target_pids = set(ready)
+    if req.paper_ids:
+        target_pids = target_pids & set(req.paper_ids)
+        if not target_pids:
+            return ChatResponse(
+                answer="指定的论文不在你的论文库中或尚未索引。",
+                citations=[],
+                meta={"mode": req.mode, "paper_count": 0, "chunk_count": 0},
+            )
+
+    # survey 模式需要更多 chunks（20篇论文 → 检索 40 个 chunks）
+    effective_top_k = max(req.top_k * 5, 20) if req.mode == "survey" else req.top_k
+
+    t1 = time.monotonic()
+    chunks = await search_chunks(
+        query=req.question,
+        collection_name=collection,
+        top_k=effective_top_k,
+    )
+    embedding_ms = (time.monotonic() - t1) * 1000
+
+    # 过滤到目标论文范围
+    if req.paper_ids:
+        chunks = [c for c in chunks if c["paper_id"] in target_pids]
+
+    if not chunks:
+        total_ms = (time.monotonic() - t0) * 1000
+        print(f"[/chat] ⚠️ 无相关 chunks，检索耗时 {embedding_ms:.0f}ms，总耗时 {total_ms:.0f}ms")
+        return ChatResponse(
+            answer="抱歉，我在你的论文库中没有找到相关内容。",
+            citations=[],
+            meta={"mode": req.mode, "paper_count": 0, "chunk_count": 0},
+        )
+
+    t2 = time.monotonic()
+    try:
+        answer_text, citations, meta = await generate_answer(
+            question=req.question,
+            chunks=chunks,
+            mode=req.mode,
+        )
+        llm_ms = (time.monotonic() - t2) * 1000
+        total_ms = (time.monotonic() - t0) * 1000
+        print(f"[/chat] ✅ 回答生成 | 检索: {embedding_ms:.0f}ms | LLM: {llm_ms:.0f}ms | 总计: {total_ms:.0f}ms | chunks: {len(chunks)} | 论文数: {meta.get('paper_count',0)}")
+        meta["timing_ms"] = {"embedding": round(embedding_ms), "llm": round(llm_ms), "total": round(total_ms)}
+        return ChatResponse(answer=answer_text, citations=citations, meta=meta)
+    except Exception as e:
+        total_ms = (time.monotonic() - t0) * 1000
+        print(f"[/chat] ❌ 生成失败 | 检索: {embedding_ms:.0f}ms | 总耗时: {total_ms:.0f}ms | 错误: {e}")
+        raise HTTPException(500, f"生成答案失败: {e}")
+
+
+@app.get("/me/quota")
+async def my_quota(user_info: tuple = Depends(get_current_user)):
+    _, user = user_info
+    # papers_used 只统计状态为 ready 的论文（索引成功才计入配额）
+    ready_count = sum(
+        1 for pid in user["papers"]
+        if get_paper(pid) and get_paper(pid).get("status") == "ready"
+    )
+    return {
+        "plan": user["plan"],
+        "papers_used": ready_count,
+        "papers_limit": None if user["plan"] == "pro" else 20,
+        "collection": user["collection"],
+    }
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
