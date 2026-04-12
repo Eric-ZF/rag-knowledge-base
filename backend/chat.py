@@ -18,6 +18,9 @@ from typing import Literal
 from dotenv import load_dotenv
 load_dotenv()
 
+import logging
+logger = logging.getLogger(__name__)
+
 from config import MINIMAX_API_KEY, MINIMAX_GROUP_ID, MINIMAX_CHAT_ENDPOINT, CHAT_MODEL
 from data import get_paper
 
@@ -421,7 +424,7 @@ async def generate_answer(
     if not chunks:
         return "抱歉，我在你的论文库中没有找到相关内容。", [], {}
     if len(chunks) < original_count:
-        print(f"[generate_answer] 过滤掉 {original_count - len(chunks)} 条参考文献 chunks")
+        logger.debug(f"[generate_answer] 过滤掉 {original_count - len(chunks)} 条参考文献 chunks")
 
     if mode == "methodology":
         system_prompt = SYSTEM_PROMPT_METHODOLOGY
@@ -566,7 +569,7 @@ def evaluate_answer(question: str, answer: str, chunks: list[dict]) -> dict:
             scores["json_mode"] = True
             return scores
     except Exception as e:
-        print(f"[evaluate_answer] JSON 解析失败（{type(e).__name__}），降级为正则: {e}")
+        logger.warning(f"[evaluate_answer] JSON 解析失败（{type(e).__name__}），降级为正则: {e}")
 
     # JSON 失败，降级为正则解析
     if raw is None:
@@ -689,7 +692,7 @@ async def generate_answer_with_self_eval(
         scores = evaluate_answer(question, answer_text, current_chunks)
         score = scores.get("total", 0)
 
-        print(f"[self_eval round {round_num}] score={score} | "
+        logger.debug(f"[self_eval round {round_num}] score={score} | "
               f"rel={scores.get('relevance','?')} | cov={scores.get('coverage','?')} | "
               f"cit={scores.get('citation_quality','?')} | gnd={scores.get('factual_grounding','?')} | "
               f"comp={scores.get('completeness','?')} | chunks={len(current_chunks)}")
@@ -733,5 +736,5 @@ async def generate_answer_with_self_eval(
             others = [c for c in chunks if not c.get("is_evidence")]
             current_chunks = (evidence + others)[:12]
 
-    print(f"[self_eval] 最终选择 round {best_meta.get('round','?')} | best_score={best_score}")
+    logger.info(f"[self_eval] 最终选择 round {best_meta.get('round','?')} | best_score={best_score}")
     return best_answer, best_citations, best_meta

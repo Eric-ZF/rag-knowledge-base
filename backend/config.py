@@ -29,6 +29,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+import logging
+logger = logging.getLogger(__name__)
+
 # ─── MiniMax Chat 配置 ────────────────────────────────
 MINIMAX_API_KEY = os.getenv("MINIMAX_API_KEY", "")
 MINIMAX_GROUP_ID = os.getenv("MINIMAX_GROUP_ID", "")
@@ -64,7 +67,7 @@ import multiprocessing
 _cpu_count = multiprocessing.cpu_count()
 _workers = int(os.getenv("UVICORN_WORKERS", "1"))
 if _cpu_count > 1 and _workers == 1:
-    print(f"⚠️  单 worker 模式运行。papers_db/feedback 是内存缓存，"
+    logger.warning("单 worker 模式运行。papers_db/feedback 是内存缓存，"
           f"多 worker 需换 Redis 或外置存储。当前: {_cpu_count} CPU, {_workers} worker")
 
 # ─── 验证 ──────────────────────────────────────────────
@@ -79,4 +82,4 @@ def validate_minimax_chat_config():
         raise RuntimeError(f"⚠️ 缺少 MiniMax Chat 配置: {', '.join(missing)}")
     if not MINIMAX_API_KEY.startswith("sk-cp"):
         raise RuntimeError(f"⚠️ MINIMAX_API_KEY 应以 sk-cp 开头")
-    print(f"✅ MiniMax Chat 配置验证通过 (Group ID: {MINIMAX_GROUP_ID[:8]}...)")
+    logger.info(f"✅ MiniMax Chat 配置验证通过 (Group ID: {MINIMAX_GROUP_ID[:8]}...)")

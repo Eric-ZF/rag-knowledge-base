@@ -10,6 +10,8 @@ from typing import Any
 
 from jose import jwt, JWTError
 import bcrypt
+from dotenv import load_dotenv
+load_dotenv()
 
 # JWT Secret — 必须从环境变量读取，不允许使用默认 fallback
 SECRET_KEY = os.getenv("JWT_SECRET")

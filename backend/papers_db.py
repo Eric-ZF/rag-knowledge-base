@@ -20,6 +20,9 @@ import os
 import threading
 import atexit
 from pathlib import Path
+
+import logging
+logger = logging.getLogger(__name__)
 from typing import Any
 
 _papers_db: dict[str, dict] = {}
@@ -36,13 +39,13 @@ def init(persistence_path: str) -> None:
         try:
             with open(persistence_path, "r", encoding="utf-8") as f:
                 _papers_db = json.load(f)
-            print(f"📂 papers_db 从 {persistence_path} 加载，{len(_papers_db)} 条记录")
+            logger.info(f"papers_db 从 {persistence_path} 加载，{len(_papers_db)} 条记录")
         except Exception as e:
-            print(f"⚠️ papers_db 加载失败（将重新创建）: {e}")
+            logger.warning(f"papers_db 加载失败（将重新创建）: {e}")
             _papers_db = {}
     else:
         _papers_db = {}
-        print(f"📂 papers_db 新建（文件不存在）")
+        logger.info("papers_db 新建（文件不存在）")
 
 
 def save() -> None:
@@ -55,7 +58,7 @@ def save() -> None:
             json.dump(_papers_db, f, ensure_ascii=False, indent=2)
         os.replace(tmp, _persistence_path)  # 原子替换
     except Exception as e:
-        print(f"⚠️ papers_db 保存失败: {e}")
+        logger.warning(f"papers_db 保存失败: {e}")
 
 atexit.register(save)  # 优雅退出时强制刷盘
 

@@ -68,7 +68,7 @@ class JinaEmbeddingWrapper:
                     results.extend(_jina_embed_batch(batch))
                     break
                 except Exception as e:
-                    print(f"⚠️ Jina API batch {i//BATCH} failed: {e}, retrying...", flush=True)
+                    logger.warning(f"Jina API batch {i//BATCH} failed: {e}, retrying...")
                     time.sleep(2)
         return results
 
@@ -160,7 +160,7 @@ def _extract_pdf_metadata(result) -> dict:
         # 备用：creator/producer
         meta['publisher'] = doc_meta.get('creator', '') or doc_meta.get('producer', '')
     except Exception as e:
-        print(f"[WARN] PDF metadata 提取失败: {e}")
+        logger.warning(f"PDF metadata 提取失败: {e}")
         meta = {'title': '', 'authors': '', 'year': None, 'doi': '', 'journal': '', 'publisher': ''}
     return meta
 
@@ -255,7 +255,7 @@ def parse_pdf_docling(pdf_path: str) -> tuple[list[Document], str, dict]:
 
     # ── 4. PDF 元数据 ────────────────────────────────────
     pdf_meta = _extract_pdf_metadata(result)
-    print(f"[DEBUG] PDF metadata: title={pdf_meta.get('title','')[:40]} authors={pdf_meta.get('authors','')[:30]} year={pdf_meta.get('year')}")
+    logger.debug(f"PDF metadata: title={pdf_meta.get('title','')[:40]} authors={pdf_meta.get('authors','')[:30]} year={pdf_meta.get('year')}")
 
     return documents, content_hash, pdf_meta
 
@@ -381,9 +381,9 @@ async def process_pdf(
             progress_callback(stage, progress, **kwargs)
 
     # 1. Docling 解析 PDF
-    print(f"[{paper_id}] 开始 Docling 解析 PDF...")
+    logger.info(f"[{paper_id}] 开始 Docling 解析 PDF...")
     raw_docs, content_hash, pdf_meta = parse_pdf_docling(pdf_path)
-    print(f"[{paper_id}] Docling 解析完成：{len(raw_docs)} 个原始单元（正文+表格+参考文献）")
+    logger.info(f"[{paper_id}] Docling 解析完成：{len(raw_docs)} 个原始单元（正文+表格+参考文献）")
 
     if not raw_docs:
         raise ValueError(f"PDF 解析失败，文档为空: {pdf_path}")
@@ -391,7 +391,7 @@ async def process_pdf(
     # 2. 两级分块
     chunker = TwoLevelChunker()
     all_chunks = chunker.chunk(raw_docs)
-    print(f"[{paper_id}] 两级 Chunk 完成：{len(all_chunks)} 个 chunks（Recall + Evidence）")
+    logger.info(f"[{paper_id}] 两级 Chunk 完成：{len(all_chunks)} 个 chunks（Recall + Evidence）")
 
     if not all_chunks:
         raise ValueError(f"PDF 分块失败，chunks 为空: {pdf_path}")
@@ -439,9 +439,9 @@ async def process_pdf(
     recall_count = sum(1 for m in metadatas if m["chunk_type"] == "recall")
     evidence_count = sum(1 for m in metadatas if m["chunk_type"] == "evidence")
 
-    print(f"[{paper_id}] ✅ 向量写入完成：{recall_count} 召回块 + {evidence_count} 证据块")
-    print(f"[{paper_id}]    Collection: '{safe_collection_name}'")
-    print(f"[{paper_id}]    Embedding: {EMBEDDING_MODEL}（1024维）")
+    logger.info(f"[{paper_id}] ✅ 向量写入完成：{recall_count} 召回块 + {evidence_count} 证据块")
+    logger.debug(f"[{paper_id}] Collection: {safe_collection_name}")
+    logger.debug(f"[{paper_id}] Embedding: {EMBEDDING_MODEL}（1024维）")
 
     emit("complete", 1.0, chunks_count=len(all_chunks))
     return {
@@ -484,15 +484,15 @@ class BM25Index:
             non_empty = [t for t in tokenized if t]
             if not non_empty:
                 self.bm25 = None
-                print("[BM25Index] 所有chunks tokenize为空，跳过BM25")
+                logger.debug("[BM25Index] 所有chunks tokenize为空，跳过BM25")
                 return
             self.bm25 = BM25Okapi(non_empty)
         except ImportError:
             self.bm25 = None
-            print("[BM25Index] rank_bm25 未安装，降级为关键词匹配")
+            logger.info("[BM25Index] rank_bm25 未安装，降级为关键词匹配")
         except ZeroDivisionError:
             self.bm25 = None
-            print("[BM25Index] BM25初始化 ZeroDivisionError（tokenize全空），跳过BM25")
+            logger.warning("[BM25Index] BM25初始化 ZeroDivisionError（tokenize全空），跳过BM25")
 
     def _chunk_tokens(self, content: str) -> list[str]:
         return _tokenize(content)

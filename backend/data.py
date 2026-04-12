@@ -9,6 +9,9 @@ Phase 0.6: papers_db + users_db JSON 持久化层
 """
 import json, os, threading
 from pathlib import Path
+
+import logging
+logger = logging.getLogger(__name__)
 from typing import Any
 
 DATA_DIR = Path("/root/.openclaw/rag-data")
@@ -41,14 +44,14 @@ def _save_json(path: Path, data: dict) -> None:
 def init_papers() -> None:
     global _papers_db
     _papers_db = _load_json(PAPERS_DB_FILE)
-    print(f"📂 papers_db 加载: {len(_papers_db)} 条")
+    logger.info(f"papers_db 加载: {len(_papers_db)} 条")
 
 def init_users() -> tuple[dict, dict]:
     """返回 (users_db, users_by_email)"""
     global _users_db
     _users_db = _load_json(USERS_DB_FILE)
     by_email = {u["email"]: u for u in _users_db.values()}
-    print(f"📂 users_db 加载: {len(_users_db)} 用户")
+    logger.info(f"users_db 加载: {len(_users_db)} 用户")
     return _users_db, by_email
 
 # papers_db 操作

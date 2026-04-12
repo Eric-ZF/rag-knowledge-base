@@ -144,7 +144,7 @@ class FeedbackStore:
         db = self._load()
         db["entries"].append(entry)
         self._save(db)
-        print(f"[feedback] 差评记录 +1 (id={entry['id'][:8]}) reasons={entry['failure_reasons']}")
+        logger.info(f"[feedback] 差评记录 +1 (id={entry['id'][:8]}) reasons={entry['failure_reasons']}")
         return entry["id"]
 
     # ─── 相似问题查询 ─────────────────────────────────
