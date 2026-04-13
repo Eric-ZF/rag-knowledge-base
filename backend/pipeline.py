@@ -168,6 +168,34 @@ def _extract_pdf_metadata(result) -> dict:
     return meta
 
 
+def _is_spaced_text(text: str) -> bool:
+    """
+    检测中文 PDF 字符间隔问题（pdfplumber 对扫描 PDF 的常见产物）。
+    特征：大量"单字 + 空格"模式，如"我 的 祖 国"或"中 国"。
+    阈值：超过 15% 的CJK字符属于"空格间隔字符"时判定为间隔文本。
+    """
+    import re
+    if not text:
+        return False
+    # 匹配中文单字后跟空格（1-2个CJK字符 + 1个空格）
+    spaced_pattern = re.compile(r'[\u4e00-\u9fff] ')
+    matches = spaced_pattern.findall(text)
+    if not matches:
+        return False
+    total_cjk = sum(1 for c in text if '\u4e00' <= c <= '\u9fff')
+    if total_cjk == 0:
+        return False
+    # spaced_ratio = 间隔字符数 / 总CJK字符数
+    spaced_count = sum(len(m) for m in matches)
+    ratio = spaced_count / total_cjk
+    return ratio > 0.15  # 超过15%则判定为间隔文本
+
+
+class SpacedTextError(Exception):
+    """pdfplumber 提取文本存在字符间隔，需要 RapidOCR 兜底"""
+    pass
+
+
 def _is_garbled_text(text: str) -> bool:
     """
     判断文本是否为乱码（Docling/RapidOCR 解析失败产物）。
@@ -288,10 +316,127 @@ def parse_pdf_plumber(pdf_path: str) -> tuple[list[Document], str, dict]:
     return documents, content_hash, pdf_meta
 
 
+def _parse_pdf_rapidocr(pdf_path: str) -> tuple[list[Document], str, dict]:
+    """
+    使用 RapidOCR 解析 PDF（第三级兜底，专治扫描件/字符间隔 PDF）。
+    RapidOCR 使用 PP-OCRv4 OCR 引擎，对扫描 PDF 中文识别效果好。
+    """
+    from rapidocr import RapidOCR
+    import pdfplumber
+
+    ocr_engine = RapidOCR()
+    all_parts = []
+    full_text_parts = []
+    pdf_meta: dict[str, Any] = {"title": "", "authors": "", "year": None, "doi": "", "journal": "", "publisher": ""}
+
+    # 提取 PDF 元数据
+    with pdfplumber.open(pdf_path) as pdf:
+        doc_info = pdf.metadata or {}
+        pdf_meta["title"] = doc_info.get("Title", "") or ""
+        authors = doc_info.get("Author", "") or ""
+        pdf_meta["authors"] = authors if isinstance(authors, str) else "; ".join(str(a) for a in authors)
+        pdf_meta["publisher"] = doc_info.get("Producer", "") or ""
+
+    # 按页处理，用 OCR 提取每页文本
+    current_section_title = ""
+    table_count = 0
+    with pdfplumber.open(pdf_path) as pdf:
+        for page_num, page in enumerate(pdf.pages, start=1):
+            # 先尝试 pdfplumber 提取文字（处理非扫描页）
+            plumber_text = page.extract_text() or ""
+            
+            # 用 RapidOCR 处理页面图片（处理扫描页/字符间隔页）
+            page_image = page.to_image(resolution=300)
+            img_array = page_image.original
+            ocr_output = ocr_engine(img_array)
+
+            ocr_text_lines = []
+            if ocr_output and hasattr(ocr_output, 'txts'):
+                for text in ocr_output.txts:
+                    if text and isinstance(text, str) and text.strip():
+                        ocr_text_lines.append(text.strip())
+            ocr_text = "\n".join(ocr_text_lines)
+
+            if not ocr_text.strip():
+                logger.debug(f"[RapidOCR] page {page_num} returned empty result, using plumber text")
+
+            # 选择更好的文本源：取较长的一个
+            use_text = ocr_text if len(ocr_text) > len(plumber_text) else plumber_text
+
+            # 检测字符间隔（如果 pdfplumber 文本明显比 OCR 长，说明 plumber 更好）
+            if plumber_text and _is_spaced_text(plumber_text):
+                # plumber 文本有间隔，用 OCR 结果替换
+                use_text = ocr_text
+
+            if not use_text.strip():
+                continue
+
+            # 表格提取（仍用 pdfplumber，OCR 对表格效果差）
+            tables = page.extract_tables()
+            for t_idx, table in enumerate(tables):
+                if table and len(table) > 1:
+                    table_count += 1
+                    md_lines = ["| " + " | ".join(str(c or "").strip() for c in table[0]) + " |"]
+                    md_lines.append("|" + "|".join(["---"] * len(table[0])) + "|")
+                    for row in table[1:]:
+                        md_lines.append("| " + " | ".join(str(c or "").strip() for c in row) + " |")
+                    all_parts.append({
+                        "text": "\n".join(md_lines),
+                        "page_number": page_num,
+                        "section_type": "table",
+                        "source": "rapidocr_table",
+                        "section_title": current_section_title,
+                        "table_index": table_count,
+                    })
+                    full_text_parts.append("\n".join(md_lines))
+
+            # 段落拆分
+            paragraphs = [p.strip() for p in use_text.split("\n\n") if p.strip()]
+            for para in paragraphs:
+                if len(para) < 5:
+                    continue
+                section_type = _classify_section(para, page_num)
+                section_title = _extract_section_title_from_text(para)
+                if section_title:
+                    current_section_title = section_title
+                all_parts.append({
+                    "text": para,
+                    "page_number": page_num,
+                    "section_type": section_type,
+                    "source": "rapidocr",
+                    "section_title": current_section_title,
+                })
+                full_text_parts.append(para)
+
+    if not full_text_parts:
+        raise ValueError(f"RapidOCR 解析失败，PDF 无可提取文本: {pdf_path}")
+
+    documents = []
+    for i, part in enumerate(all_parts):
+        documents.append(Document(
+            page_content=part["text"],
+            metadata={
+                "page_number": part["page_number"],
+                "section_type": part["section_type"],
+                "source": part["source"],
+                "section_title": part.get("section_title", ""),
+                "chunk_index": i,
+                **{k: v for k, v in part.items()
+                   if k not in ("text", "page_number", "section_type", "source", "section_title")},
+            }
+        ))
+
+    content_hash = hashlib.sha256(
+        ("|||".join(full_text_parts)).encode("utf-8")
+    ).hexdigest()
+    return documents, content_hash, pdf_meta
+
+
 def parse_pdf_with_fallback(pdf_path: str) -> tuple[list[Document], str, dict]:
     """
     解析 PDF，优先使用 Docling（表格/结构化最强）。
     若解析质量过低（乱码比例 > 50%），自动降级到 pdfplumber。
+    若 pdfplumber 输出存在字符间隔，进一步降级到 RapidOCR。
     同时检测章节标题，存入 metadata['section_title']。
     """
     # ── 1. 先用 Docling ──────────────────────────────
@@ -354,7 +499,16 @@ def parse_pdf_with_fallback(pdf_path: str) -> tuple[list[Document], str, dict]:
 
     if quality_ratio < 0.50:
         logger.warning(f"[parse] Docling 质量低于 50%（{quality_ratio:.1%}），降级到 pdfplumber")
-        return parse_pdf_plumber(pdf_path)
+        plumber_docs, plumber_hash, plumber_meta = parse_pdf_plumber(pdf_path)
+        # 检查 pdfplumber 输出是否有字符间隔（扫描 PDF 特征）
+        plumber_texts = [d.page_content for d in plumber_docs]
+        spaced_pages = sum(1 for t in plumber_texts if _is_spaced_text(t))
+        logger.info(f"[parse] pdfplumber 字符间隔检测：{spaced_pages}/{len(plumber_texts)} 段存在间隔")
+        if spaced_pages > len(plumber_texts) * 0.3:
+            # 超过 30% 段落有间隔，切换到 RapidOCR
+            logger.warning(f"[parse] pdfplumber {spaced_pages}/{len(plumber_texts)} 段字符间隔 > 30%，降级到 RapidOCR")
+            return _parse_pdf_rapidocr(pdf_path)
+        return plumber_docs, plumber_hash, plumber_meta
 
     # ── 3. 生成 Documents ───────────────────────────────
     documents = []
@@ -448,17 +602,21 @@ class TwoLevelChunker:
 
     def chunk(self, documents: list[Document]) -> list[Document]:
         """
-        对原始文档做两级切分：
-        1. 先切召回块
-        2. 再从召回块切证据块
-        3. 合并，去重，保留位置信息
+        对原始文档做两级级联切分：
+        1. 先切召回块（按语义段落，较大粒度）
+        2. 从召回块切证据块（更细粒度，确保 evidence ⊂ recall）
+        3. 合并，保留来源关系
+
+        Fix: 证据块从 recall chunks 切分（非独立切分原文档），
+             消除重复 content，ChromaDB 写入量减半。
         """
         recall_chunks = self.recall_splitter.split_documents(documents)
-        evidence_chunks = self.evidence_splitter.split_documents(documents)
+        # 级联切分：evidence 从 recall 块切出，确保子集关系无重复
+        evidence_chunks = self.evidence_splitter.split_documents(recall_chunks)
 
         all_chunks = []
 
-        # 合并，设置 chunk_type
+        # 合并，设置 chunk_type；evidence 记录来自哪个 recall chunk
         for i, chunk in enumerate(recall_chunks):
             meta = dict(chunk.metadata)
             meta["chunk_type"] = "recall"
@@ -472,6 +630,8 @@ class TwoLevelChunker:
             meta = dict(chunk.metadata)
             meta["chunk_type"] = "evidence"
             meta["evidence_index"] = i
+            # 记录父 recall chunk 的索引（用于溯源）
+            # evidence_splitter 返回的 Document.metadata 仍保留 source chunk 信息
             all_chunks.append(Document(
                 page_content=chunk.page_content,
                 metadata=meta,
@@ -627,16 +787,58 @@ class BM25Index:
 
 def hybrid_search(vectorstore, query: str, query_embedding_fn, k: int = 10) -> list[dict]:
     """
-    真正混合检索：向量检索 ∪ BM25 检索 → RRF 融合 → 质量加权。
+    真正混合检索：向量检索 ∪ BM25（全量） → RRF 融合 → 质量加权。
 
     学术场景必须精确匹配专业术语（"DID"、"OLS"、"碳排放权交易"），
     纯向量无法可靠捕捉这些精确词项。
 
     策略：向量 Top(k*3) ∪ BM25 Top(k*3) → RRF(k=60) 融合 → section/page 加权
+
+    Fix: BM25 改为在全量 chunks 上构建（而非仅在向量候选集上），
+         消除偏差累积，实现向量 + BM25 真正独立融合。
     """
     import re
 
-    # ── 1. 向量检索候选 ───────────────────────────────
+    # ── 1. 获取全量 chunks（用于 BM25 全量索引）────────
+    # 分批获取避免大集合内存压力，同时确保拿到所有 chunks
+    all_chunk_dicts: list[dict] = []
+    batch_size = 5000
+    offset = 0
+    while True:
+        batch = vectorstore._collection.get(
+            limit=batch_size, offset=offset,
+            include=["documents", "metadatas"]
+        )
+        if not batch or not batch.get("ids"):
+            break
+        for cid, doc, meta in zip(
+            batch["ids"], batch["documents"], batch["metadatas"]
+        ):
+            if doc and meta:
+                all_chunk_dicts.append({
+                    "chunk_id": cid,
+                    "content": doc,
+                    "metadata": dict(meta),
+                })
+        offset += batch_size
+        if len(batch["ids"]) < batch_size:
+            break
+
+    if not all_chunk_dicts:
+        return []
+
+    # ── 2. BM25 全量索引（独立于向量检索）──────────────
+    bm25_index = BM25Index(all_chunk_dicts)
+    bm25_all_results = bm25_index.search(query, top_k=min(len(all_chunk_dicts), k * 5))
+    # 建立 chunk_id → bm25_rank/bm25_score 映射
+    bm25_map: dict[str, dict] = {}
+    if bm25_all_results:
+        max_bm = bm25_all_results[0][1] or 1.0
+        for rank, (idx, score) in enumerate(bm25_all_results, 1):
+            cid = all_chunk_dicts[idx]["chunk_id"]
+            bm25_map[cid] = {"bm25_rank": rank, "bm25_score": score / max_bm}
+
+    # ── 3. 向量检索候选 ───────────────────────────────
     query_vec = query_embedding_fn.embed_query(query)
     vector_results = vectorstore._collection.query(
         query_embeddings=[query_vec],
@@ -645,7 +847,6 @@ def hybrid_search(vectorstore, query: str, query_embedding_fn, k: int = 10) -> l
     )
 
     from langchain_core.documents import Document
-    # 统一候选集，用 id → (doc, vector_rank, vector_score)
     candidates: dict[str, dict] = {}
     docs = vector_results.get("documents", [[]])[0]
     metas = vector_results.get("metadatas", [[]])[0]
@@ -658,44 +859,37 @@ def hybrid_search(vectorstore, query: str, query_embedding_fn, k: int = 10) -> l
         candidates[chunk_id] = {"doc": d, "vector_rank": rank}
 
     if not candidates:
-        return []
+        # 兜底：直接用 BM25 结果
+        for cid, bm_info in sorted(bm25_map.items(), key=lambda x: x[1]["bm25_rank"]):
+            candidates[cid] = {
+                "doc": Document(page_content=all_chunk_dicts[bm25_all_results[bm_info["bm25_rank"] - 1][0]]["content"],
+                                 metadata=all_chunk_dicts[bm25_all_results[bm_info["bm25_rank"] - 1][0]]["metadata"]),
+                "vector_rank": 999,
+                "bm25_rank": bm_info["bm25_rank"],
+                "bm25_score": bm_info["bm25_score"],
+            }
+        if not candidates:
+            return []
 
-    # ── 2. BM25 检索（在向量候选集上建索引）────────────
-    # 将 ChromaDB 返回的 chunks 转为 dict list 供 BM25Index
-    chunk_dicts = []
+    # ── 4. 向量检索结果注入 BM25 分数 ──────────────────
+    # 未命中向量的 BM25 命中 Chunk 也加入候选（独立发现）
+    for cid, bm_info in bm25_map.items():
+        if cid not in candidates:
+            for cd in all_chunk_dicts:
+                if cd["chunk_id"] == cid:
+                    candidates[cid] = {
+                        "doc": Document(page_content=cd["content"], metadata=cd["metadata"]),
+                        "vector_rank": 999,
+                        "bm25_rank": bm_info["bm25_rank"],
+                        "bm25_score": bm_info["bm25_score"],
+                    }
+                    break
+
+    # 给向量候选注入 BM25 分数
     for cid, c in candidates.items():
-        doc = c["doc"]
-        chunk_dicts.append({
-            "chunk_id": cid,
-            "content": doc.page_content,
-            "metadata": dict(doc.metadata),
-        })
-
-    bm25_index = BM25Index(chunk_dicts)
-    bm25_results = bm25_index.search(query, top_k=k * 3)  # [(idx, score)]
-
-    # 归一化 BM25 分数，分配 rank
-    if bm25_results:
-        max_bm25 = bm25_results[0][1] or 1.0
-        for rank, (idx, score) in enumerate(bm25_results, 1):
-            chunk_id = chunk_dicts[idx]["chunk_id"]
-            if chunk_id in candidates:
-                candidates[chunk_id]["bm25_rank"] = rank
-                candidates[chunk_id]["bm25_score"] = score / max_bm25
-            else:
-                # BM25 命中了向量检索未召回的 chunk（扩展候选）
-                extra_doc = Document(
-                    page_content=chunk_dicts[idx]["content"],
-                    metadata=chunk_dicts[idx]["metadata"],
-                )
-                extra_doc.metadata["_bm25_rank"] = rank
-                extra_doc.metadata["_bm25_score"] = score / max_bm25
-                candidates[chunk_id] = {
-                    "doc": extra_doc,
-                    "vector_rank": 999,
-                    "bm25_rank": rank,
-                    "bm25_score": score / max_bm25,
-                }
+        if cid in bm25_map:
+            c["bm25_rank"] = bm25_map[cid]["bm25_rank"]
+            c["bm25_score"] = bm25_map[cid]["bm25_score"]
 
     # ── 3. 彻底过滤参考文献区（不只是扣分，彻底排除）──────────────
     ref_penalize = []
@@ -785,8 +979,9 @@ async def search_chunks(
         persist_directory=persist_directory,
     )
 
-    # 扩大召回倍数，确保过滤后仍有足够候选
-    retrieve_k = top_k * 5 if section_filter else top_k * 3
+    # 扩大召回倍数（确保 citation 去重后仍有足够片段）：
+    # k=5 → retrieve_k=30 → RRF 输出30条 → citation 去重(每篇3条)后 ≈ 6-9条
+    retrieve_k = top_k * 6 if section_filter else top_k * 6
     hybrid_results = hybrid_search(vectorstore, query, embedding_fn, k=retrieve_k)
 
     chunks = []

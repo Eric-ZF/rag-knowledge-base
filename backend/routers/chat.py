@@ -76,7 +76,8 @@ async def chat(req: ChatRequest, user_info: tuple = Depends(get_current_user)):
     similar = feedback_store.find_similar(req.question)
     has_similar_history = len(similar) > 0
 
-    effective_top_k = max(req.top_k * 5, 20) if req.mode == "survey" else req.top_k
+    # 检索量：默认 top_k=5 → 检索 30 条 → 去重后 6-15 条 citation 片段
+    effective_top_k = max(req.top_k * 6, 30) if req.mode == "survey" else req.top_k
 
     t1 = time.monotonic()
     chunks = await search_chunks(
@@ -167,11 +168,11 @@ async def chat_stream(req: ChatRequest, user_info: tuple = Depends(get_current_u
     chunks = await search_chunks(
         query=req.question,
         collection_name=collection,
-        top_k=req.top_k * 3,
+        top_k=req.top_k * 6,  # 检索 6×top_k，确保去重后仍有足够片段
     )
     if req.paper_ids:
         chunks = [c for c in chunks if c["paper_id"] in target_pids]
-    chunks = chunks[:req.top_k * 5]
+    chunks = chunks[:req.top_k * 12]  # 保留足够多片段（5→60条），citation去重后仍有多片段
     embedding_ms = (time.monotonic() - t0) * 1000
 
     if not chunks:
