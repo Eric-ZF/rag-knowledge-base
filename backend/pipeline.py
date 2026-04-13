@@ -547,30 +547,82 @@ def parse_pdf_with_fallback(pdf_path: str) -> tuple[list[Document], str, dict]:
 
 def _classify_section(text: str, page_num: int) -> str:
     """
-    根据文本内容 + 页码判断段落类型（用于 chunk 权重和检索优先级）
+    根据文本首行 + 页码判断段落类型（用于 chunk 权重和检索优先级）。
+    
+    设计原则：
+    - 必须匹配行首的中文/阿拉伯数字 section 标记
+    - 避免 "1" "2" "3" 等单独数字误触发（会匹配页码/图号/表号）
+    - 中文 numeral section 标记必须出现在行首（或整行就是一个数字+标题）
+    - 政策报告格式 "准见·策言3" 视为 result（因为是策言/建议类）
     """
-    first_line = text.strip().split('\n')[0][:100].lower()
+    import re
+    first_line = text.strip().split('\n')[0]
+    first_lower = first_line.lower()
 
-    # 摘要（通常第1页，或有"摘要"关键字）
-    if page_num == 1 and any(kw in first_line for kw in ['摘要', 'abstract', '概要', '提要']):
+    # ── 摘要 ──────────────────────────────────────────
+    if page_num == 1 and any(kw in first_lower for kw in ['摘要', 'abstract', '概要', '提要']):
         return "abstract"
-    # 引言/背景
-    if any(kw in first_line for kw in ['1', '一、', '引言', 'introduction', '背景', '研究现状']):
-        return "introduction"
-    # 方法
-    if any(kw in first_line for kw in ['方法', 'method', '实验', '数据来源', '2', '二、']):
-        return "method"
-    # 结果
-    if any(kw in first_line for kw in ['结果', 'result', '分析', '3', '三、']):
-        return "result"
-    # 讨论
-    if any(kw in first_line for kw in ['讨论', 'discussion', '4', '四、']):
-        return "discussion"
-    # 结论
-    if any(kw in first_line for kw in ['结论', 'conclusion', '总结', '主要发现', '研究发现']):
+
+    # ── 结论（最具体，优先判断）─────────────────────
+    conclusion_patterns = ['结论', 'conclusion', '总结', '主要发现', '研究发现', '政策启示', '研究结论']
+    if any(kw in first_lower for kw in conclusion_patterns):
         return "conclusion"
-    # 参考文献
-    if any(kw in first_line for kw in ['参考文献', 'reference', '引用', 'bibliography']):
+
+    # ── 方法（关键词优先，避免被数字误触发）─────────
+    method_patterns = ['研究设计', '数据来源', '实证方法', '模型设定', '模型构建', '变量选择',
+                       '研究框架', 'method', '实验', '样本选择', '数据说明']
+    if any(kw in first_lower for kw in method_patterns):
+        return "method"
+
+    # ── 结果（关键词优先）───────────────────────────
+    result_patterns = ['实证结果', '回归结果', '估计结果', '分析结果', '研究结果',
+                       '稳健性', '内生性', '异质性分析', '影响效应']
+    if any(kw in first_lower for kw in result_patterns):
+        return "result"
+
+    # ── 引言/背景 ───────────────────────────────────
+    intro_patterns = ['引言', '前言', '背景', '研究现状', '文献综述', '理论框架',
+                      '问题的提出', '研究动机', 'introduction']
+    if any(kw in first_lower for kw in intro_patterns):
+        return "introduction"
+
+    # ── 讨论 ────────────────────────────────────────
+    discussion_patterns = ['讨论', 'discussion', '政策建议', '启示与建议']
+    if any(kw in first_lower for kw in discussion_patterns):
+        return "discussion"
+
+    # ── 中文数字 section 标记（行首匹配，防止误触发）──
+    # 匹配 "一、", "二、", "三、" 等在行首（或整行开头）
+    # 但排除 "表1", "图2", "第3页" 等非标题数字
+    cn_match = re.match(r'^[一二三四五六七八九十]+[、、]', first_line)
+    if cn_match:
+        marker = cn_match.group()[:2]  # e.g. "三、"
+        # 常见章节 → section 映射（基于中文论文惯例）
+        section_map = {
+            '一、': 'introduction',  # 一、问题提出 / 文献综述
+            '二、': 'introduction',  # 二、理论背景
+            '三、': 'method',        # 三、研究设计 / 实证方法
+            '四、': 'result',        # 四、实证结果
+            '五、': 'discussion',    # 五、结论与讨论
+            '六、': 'conclusion',    # 六、研究结论
+            '七、': 'conclusion',
+            '八、': 'conclusion',
+        }
+        return section_map.get(marker, 'body')
+
+    # ── 阿拉伯数字 section 标记（行首，\d+. 或 \d+、）──
+    # e.g. "1. 引言", "2. 研究设计"
+    arabic_match = re.match(r'^[0-9]+[.、\s]', first_line)
+    if arabic_match:
+        num_str = re.match(r'^[0-9]+', first_line).group()
+        num = int(num_str)
+        # 阿拉伯数字 section（通常：1=引言, 2=方法, 3=结果, 4=讨论, 5=结论）
+        section_map = {1: 'introduction', 2: 'method', 3: 'result', 4: 'discussion', 5: 'conclusion'}
+        return section_map.get(num, 'body')
+
+    # ── 参考文献 ────────────────────────────────────
+    ref_patterns = ['参考文献', 'reference', '引用', 'bibliography', '资料来源']
+    if any(kw in first_lower for kw in ref_patterns):
         return "reference"
 
     # 默认正文
@@ -989,6 +1041,22 @@ async def search_chunks(
         section_filter: 可选，如 "introduction"/"methodology"/"conclusion"，
                        只召回匹配 section_type 的 chunks
     """
+    # ── Query 扩展：针对学术 RAG 的词项补充 ──────────────────────
+    # 当用户问及"方法/数据/模型"时，自动补充领域术语，提升召回率
+    QUERY_EXPANSION = {
+        "method": ["研究设计", "模型设定", "CGE", "GTAP", "计量模型", "回归分析", "数据来源", "样本", "变量"],
+        "data": ["数据库", "数据来源", "样本", "统计年鉴", "年鉴数据", "调查数据"],
+        "result": ["回归结果", "实证结果", "估计结果", "回归系数", "显著性", "稳健性检验", "内生性检验"],
+        "conclusion": ["研究结论", "政策启示", "研究结论与建议", "主要发现"],
+    }
+    expanded_query = query
+    query_lower = query.lower()
+    for intent, terms in QUERY_EXPANSION.items():
+        if any(kw in query_lower for kw in [intent, "方法", "数据", "模型", "变量", "结果", "结论"]):
+            for term in terms:
+                if term.lower() not in query_lower:
+                    expanded_query += f" {term}"
+
     safe_collection_name = re.sub(r"[^a-zA-Z0-9_]", "_", collection_name)
     embedding_fn = get_chroma_embedding_fn()
 
@@ -1001,7 +1069,8 @@ async def search_chunks(
     # 扩大召回倍数（确保 citation 去重后仍有足够片段）：
     # k=5 → retrieve_k=30 → RRF 输出30条 → citation 去重(每篇3条)后 ≈ 6-9条
     retrieve_k = top_k * 6 if section_filter else top_k * 6
-    hybrid_results = hybrid_search(vectorstore, query, embedding_fn, k=retrieve_k)
+    # 用扩展 query 做检索（BM25 + 向量都用扩展版本）
+    hybrid_results = hybrid_search(vectorstore, expanded_query, embedding_fn, k=retrieve_k)
 
     chunks = []
     for item in hybrid_results:
