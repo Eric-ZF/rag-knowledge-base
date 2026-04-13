@@ -399,8 +399,11 @@ def _is_truncated(text: str) -> bool:
     # 未闭合的 Markdown 列表（- item 后面没换行或空行）
     if re.search(r'\n[-*]\s+[\u4e00-\u9fff\w]', text[-100:]) and not re.search(r'\n\n', text[-50:]):
         return True
-    # 未闭合的引用块
+    # 未闭合的引用块（排除不完整的 thinking 标签，如 "think>" "</think>" "<THINK>"）
     if text.count('>') % 2 == 1 and text[-1] == '>':
+        # 忽略不完整的 thinking/XML 标签片段（如 "think>" "</think>" "<THINK>"）
+        if re.search(r'(think|analysis|reason)\s*>?\s*$', text, re.IGNORECASE):
+            return False
         return True
     # 末尾是连接号/括号/逗号/冒号等不成句的字符
     if re.search(r'[,，:：;；]$', text):
