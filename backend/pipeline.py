@@ -171,24 +171,36 @@ def _extract_pdf_metadata(result) -> dict:
 def _is_spaced_text(text: str) -> bool:
     """
     检测中文 PDF 字符间隔问题（pdfplumber 对扫描 PDF 的常见产物）。
-    特征：大量"单字 + 空格"模式，如"我 的 祖 国"或"中 国"。
-    阈值：超过 15% 的CJK字符属于"空格间隔字符"时判定为间隔文本。
+    两种模式:
+    1. 字符间隔: "我 的 祖 国" - 大量"单字+空格"模式
+    2. 字符压缩: "对对中中国国高高碳碳..." - 连续CJK字符无间隔
+    RapidOCR 对两者都有很好的修复效果。
     """
     import re
     if not text:
         return False
-    # 匹配中文单字后跟空格（1-2个CJK字符 + 1个空格）
-    spaced_pattern = re.compile(r'[\u4e00-\u9fff] ')
-    matches = spaced_pattern.findall(text)
-    if not matches:
-        return False
     total_cjk = sum(1 for c in text if '\u4e00' <= c <= '\u9fff')
-    if total_cjk == 0:
+    if total_cjk < 10:
         return False
-    # spaced_ratio = 间隔字符数 / 总CJK字符数
-    spaced_count = sum(len(m) for m in matches)
-    ratio = spaced_count / total_cjk
-    return ratio > 0.15  # 超过15%则判定为间隔文本
+
+    # 模式1: 字符间隔（单字+空格），如"对 的 中 国"
+    spaced_pattern = re.compile(r'[\u4e00-\u9fff] ')
+    spaced_matches = spaced_pattern.findall(text)
+    spaced_count = sum(len(m) for m in spaced_matches)
+
+    # 模式2: 字符压缩（连续CJK无间隔），如"对对中国"
+    # 统计连续2+个CJK无间隔的情况
+    compressed_pattern = re.compile(r'[\u4e00-\u9fff]{2,}')
+    compressed_matches = compressed_pattern.findall(text)
+    # 每个匹配中，除了第一个字符外都是"多余"的压缩字符
+    compressed_count = sum(max(0, len(m) - 1) for m in compressed_matches)
+
+    # 字符间隔模式为主（压缩文本中可能也有间隔）
+    # 但字符压缩更严重：连续2个CJK无间隔 = 必有1个压缩字符
+    total_bad = spaced_count + compressed_count
+    ratio = total_bad / total_cjk
+    # 阈值15%：超过说明有问题
+    return ratio > 0.15
 
 
 class SpacedTextError(Exception):
@@ -712,6 +724,13 @@ async def process_pdf(
         }
         for i, c in enumerate(all_chunks)
     ]
+
+    # 写入前先删除该论文的旧 chunks（避免重复累积）
+    try:
+        vectorstore._collection.delete(where={"paper_id": paper_id})
+        logger.info(f"[{paper_id}] 删除旧 chunks")
+    except Exception as e:
+        logger.warning(f"[{paper_id}] 删除旧 chunks 失败: {e}")
 
     vectorstore.add_texts(texts=texts, metadatas=metadatas)
 
