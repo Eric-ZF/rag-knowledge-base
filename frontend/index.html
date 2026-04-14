@@ -963,7 +963,7 @@
         return;
       }
       container.innerHTML = papers.filter(p => p.status === 'ready').map(p => `
-        <div class="paper-item">
+        <div class="paper-item" data-paper-id="${escapeHtml(p.paper_id)}">
           <div class="paper-body">
             <div class="title">${escapeHtml(p.title)}</div>
             <div class="meta">${p.chunks_count ? p.chunks_count + ' 个片段' : '处理中…'}</div>
@@ -974,10 +974,25 @@
             }</span>
           </div>
           <div class="paper-actions">
-            <button class="action-btn cite-btn" title="引用此论文" onclick="insertPaperCitation('${p.paper_id}', ${JSON.stringify(p.title).replace(/'/g, "&#39;")})">📎 引用</button>
-            <button class="action-btn delete-btn" title="删除论文" onclick="confirmDelete('${p.paper_id}', ${JSON.stringify(p.title).replace(/'/g, "&#39;")})">🗑️</button>
+            <button class="action-btn cite-btn" data-action="cite" data-id="${escapeHtml(p.paper_id)}" data-title="${escapeHtml(p.title)}">📎 引用</button>
+            <button class="action-btn delete-btn" data-action="delete" data-id="${escapeHtml(p.paper_id)}" data-title="${escapeHtml(p.title)}">🗑️</button>
           </div>
         </div>`).join('');
+
+      // 事件委托：论文卡片按钮
+      container.querySelectorAll('.paper-actions button').forEach(btn => {
+        btn.addEventListener('click', e => {
+          e.stopPropagation();
+          const action = btn.dataset.action;
+          const paperId = btn.dataset.id;
+          const title = btn.dataset.title;
+          if (action === 'cite') {
+            insertPaperCitation(paperId, title);
+          } else if (action === 'delete') {
+            confirmDelete(paperId, title);
+          }
+        });
+      });
     } catch(e) {
       console.error('[LoadPapers Error]', e);
     }
