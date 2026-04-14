@@ -332,6 +332,37 @@
       border-radius: 6px; font-size: 12px; color: #856404;
       line-height: 1.5;
     }
+    /* 可折叠思考过程块 */
+    .msg.assistant .thinking-block {
+      background: #f8f7ff;
+      border: 1px solid #dedaff;
+      border-radius: 8px;
+      margin-bottom: 10px;
+      font-size: 13px;
+      overflow: hidden;
+    }
+    .msg.assistant .thinking-block summary {
+      padding: 7px 12px;
+      cursor: pointer;
+      font-weight: 600;
+      color: #6b5ce7;
+      font-size: 12px;
+      user-select: none;
+      list-style: none;
+    }
+    .msg.assistant .thinking-block summary::-webkit-details-marker { display: none; }
+    .msg.assistant .thinking-block[open] summary {
+      border-bottom: 1px solid #dedaff;
+      background: #f0efff;
+    }
+    .msg.assistant .thinking-block .thinking-content {
+      padding: 8px 12px 10px;
+      color: #6b6891;
+      line-height: 1.65;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 12.5px;
+    }
 
     /* 消息出现动画 */
     @keyframes msgIn {
@@ -1004,17 +1035,22 @@
       let lineBuf = '';
       let tokBuf = '';
 
-      const stripThinking = (text) => {
-        return text
-          .replace(/<think[ing]*>[\s\S]*?<\/think>/gi, '')
+      // 提取思考块（不删除），返回 { thinking, answer }
+      const extractThinking = (text) => {
+        const thinkingBlocks = [];
+        const clean = text
+          .replace(/<think[ing]*>([\s\S]*?)<\/think>/gi, (_, inner) => {
+            const trimmed = inner.trim();
+            if (trimmed) thinkingBlocks.push(trimmed);
+            return '';
+          })
           .replace(/<THINK[\s\S]*?<\/THINK>/gi, '');
+        return { thinking: thinkingBlocks, answer: clean };
       };
 
+      // 将 markdown 转换为 HTML（不对 html 标签转义，用于已安全处理的文本）
       const renderMarkdown = (text) => {
-        if (!text) return;
-        text = stripThinking(text);
-        if (!text.trim()) return;
-        text = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        if (!text || !text.trim()) return;
         text = text
           .replace(/^### (.+)$/gm, '<h3>$1</h3>')
           .replace(/^## (.+)$/gm, '<h2>$1</h2>')
@@ -1026,6 +1062,26 @@
         msgs.scrollTop = msgs.scrollHeight;
       };
 
+      // 将思考内容渲染为可折叠块（默认收起）
+      const renderThinkingBlocks = (blocks) => {
+        if (!blocks || blocks.length === 0) return;
+        const details = document.createElement('details');
+        details.className = 'thinking-block';
+        const summary = document.createElement('summary');
+        const count = blocks.length;
+        summary.textContent = `💭 思考过程 ${count > 1 ? `(${count}段)` : ''}`;
+        details.appendChild(summary);
+        blocks.forEach((blk, i) => {
+          // 不做 markdown 解析，直接显示原文，保持缩进和换行
+          const p = document.createElement('div');
+          p.className = 'thinking-content';
+          p.textContent = blk;
+          if (i > 0) p.style.marginTop = '6px';
+          details.appendChild(p);
+        });
+        bubbleEl.appendChild(details);
+      };
+
       const flushLine = () => {
         const line = lineBuf.trim();
         lineBuf = '';
@@ -1035,11 +1091,13 @@
           const data = JSON.parse(dataStr);
           if (data.type === 'token') {
             tokBuf += data.content;
-            tokBuf = stripThinking(tokBuf);
-            if (tokBuf) { renderMarkdown(tokBuf); tokBuf = ''; }
           } else if (data.type === 'done') {
-            tokBuf = stripThinking(tokBuf);
-            if (tokBuf.trim()) renderMarkdown(tokBuf);
+            const { thinking, answer } = extractThinking(tokBuf);
+            renderThinkingBlocks(thinking);
+            if (answer.trim()) {
+              const esc = answer.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+              renderMarkdown(esc);
+            }
             // 渲染引用来源（论文标题+页码）
             if (data.citations && data.citations.length > 0) {
               const citeEl = document.createElement('div');
