@@ -217,8 +217,13 @@
     .paper-item:hover {
       box-shadow: var(--shadow-hover);
       transform: translateY(-1px);
-      border-color: rgba(196, 75, 58, 0.3);
+      border-color: rgba(37, 99, 235, 0.4);
     }
+    .paper-item .cite-hint {
+      font-size: 14px; opacity: 0; transition: opacity 0.15s;
+      flex-shrink: 0; padding: 4px;
+    }
+    .paper-item:hover .cite-hint { opacity: 1; }
     .paper-item .paper-body { flex: 1; min-width: 0; }
     .paper-item .title { font-size: 14px; font-weight: 500; color: var(--ink-900); }
     .paper-item .meta { font-size: 12px; color: var(--ink-500); margin-top: 4px; }
@@ -943,7 +948,7 @@
         return;
       }
       container.innerHTML = papers.filter(p => p.status === 'ready').map(p => `
-        <div class="paper-item" data-paper-id="${p.paper_id}">
+        <div class="paper-item" data-paper-id="${p.paper_id}" onclick="insertPaperCitation('${p.paper_id}', ${JSON.stringify(p.title).replace(/'/g, "&#39;")})">
           <div class="paper-body">
             <div class="title">${escapeHtml(p.title)}</div>
             <div class="meta">${p.chunks_count ? p.chunks_count + ' 个片段' : '处理中…'}</div>
@@ -953,6 +958,7 @@
               : '❌ 失败'
             }</span>
           </div>
+          <span class="cite-hint" title="点击引用到问题">📎</span>
           ${p.deletable ? `<button class="delete-btn" title="删除论文" onclick="event.stopPropagation(); confirmDelete('${p.paper_id}', ${JSON.stringify(p.title).replace(/'/g, "&#39;")})">🗑️</button>` : ''}
         </div>`).join('');
     } catch(e) {
@@ -970,6 +976,18 @@
     } catch(e) {
       showToast('删除失败：' + e.message, 'error');
     }
+  }
+
+  /* ── 论文引用 ─────────────────────────────────────── */
+  function insertPaperCitation(paperId, title) {
+    const input = document.getElementById('chat-input');
+    const sep = input.value.trim() ? ' ' : '';
+    // 追加格式：引用论文：{标题}
+    input.value += sep + `引用论文：${title}`;
+    input.style.height = 'auto';
+    input.style.height = input.scrollHeight + 'px';
+    input.focus();
+    showToast(`已引用：${title}`, 'success');
   }
 
   /* ── 配额 ─────────────────────────────────────────── */
