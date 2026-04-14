@@ -332,6 +332,33 @@
       background: #f0f4ff; border-radius: 0 4px 4px 0;
       color: #1a1a2e; font-size: 13.5px;
     }
+    /* Markdown 表格 */
+    .msg.assistant .bubble .md-table {
+      border-collapse: collapse;
+      width: auto;
+      max-width: 100%;
+      margin: 8px 0;
+      font-size: 13px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      overflow: hidden;
+    }
+    .msg.assistant .bubble .md-table th {
+      background: #f0f4ff;
+      padding: 6px 12px;
+      text-align: left;
+      font-weight: 600;
+      border-bottom: 1px solid var(--border);
+      color: var(--ink-700);
+      font-size: 12.5px;
+    }
+    .msg.assistant .bubble .md-table td {
+      padding: 5px 12px;
+      border-bottom: 1px solid var(--border);
+      color: var(--ink-700);
+    }
+    .msg.assistant .bubble .md-table tr:last-child td { border-bottom: none; }
+    .msg.assistant .bubble .md-table tr:nth-child(even) td { background: #faf9f7; }
     .msg.assistant .bubble strong { font-weight: 700; color: #1a1a2e; }
     .msg.assistant .bubble em { font-style: italic; color: #555; }
     /* 引用 */
@@ -1130,35 +1157,99 @@
         return { thinking: thinkingBlocks, answer: clean };
       };
 
-      // 将 markdown 转换为 HTML（不对 html 标签转义，用于已安全处理的文本）
-      const renderMarkdown = (text) => {
-        if (!text || !text.trim()) return;
-        text = text
-          // 块引用（> 原文引用）
-          .replace(/^&gt; (.+)$/gm, '<blockquote>$1</blockquote>')
-          // 加粗 **text** 或 __text__
+      // 去掉 LLM 错误生成的页码引用（如 "📄 p.12"），不是有效 citation
+      const stripPageRefs = (text) => {
+        return text.replace(/📄\s*p\.?\s*\d+/gi, '').replace(/p\.\s*\d+/g, '').trim();
+      };
+
+      // 将一行文本渲染为单行 markdown HTML（不加 outer <p>）
+      const renderMarkdownLine = (line) => {
+        if (!line.trim()) return '';
+        return line
+          .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+          .replace(/^&gt; (.+)$/, '<blockquote>$1</blockquote>')
           .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
           .replace(/__(.+?)__/g, '<strong>$1</strong>')
-          // 斜体 *text* 或 _text_
-          .replace(/\*(.+?)\*/g, '<em>$1</em>')
-          .replace(/_(.+?)_/g, '<em>$1</em>')
-          // 行内代码 `code`
           .replace(/`([^`]+)`/g, '<code>$1</code>')
-          // 标题（必须在列表之前处理）
-          .replace(/^### (.+)$/gm, '<h3>$1</h3>')
-          .replace(/^## (.+)$/gm, '<h2>$1</h2>')
-          .replace(/^# (.+)$/gm, '<h1>$1</h1>')
-          // 无序列表
-          .replace(/^\- (.+)$/gm, '<li>$1</li>')
-          // 有序列表
-          .replace(/^\d+\. (.+)$/gm, '<li>$1</li>')
-          // 换行：连续两个换行 → 段落分隔，单个换行 → <br>
-          .replace(/\n\n/g, '</p><p>')
-          .replace(/\n/g, '<br>');
-        // 包一层 <p> 确保块引用等元素独立成段
-        if (!text.startsWith('<')) text = '<p>' + text;
-        bubbleEl.innerHTML += text;
-        msgs.scrollTop = msgs.scrollHeight;
+          .replace(/^### (.+)$/, '<h3>$1</h3>')
+          .replace(/^## (.+)$/, '<h2>$1</h2>')
+          .replace(/^# (.+)$/, '<h1>$1</h1>');
+      };
+
+      // 解析 markdown 表格（lines 是连续的表格行）
+      const parseTable = (lines) => {
+        if (lines.length < 2) return null;
+        // separator 行必须是 |---|... 格式
+        if (!/^\|?[\s:\-|]+\|/.test(lines[1])) return null;
+        const headers = lines[0].split('|').map(h => h.trim()).filter(h => h && !/^-+$/.test(h));
+        if (headers.length === 0) return null;
+        const rows = [];
+        for (let i = 2; i < lines.length; i++) {
+          const cells = lines[i].split('|').map(c => c.trim()).filter(c => c);
+          if (cells.length > 0) rows.push(cells);
+        }
+        let html = '<table class="md-table"><thead><tr>';
+        html += headers.map(h => `<th>${h}</th>`).join('') + '</tr></thead><tbody>';
+        rows.forEach(row => {
+          html += '<tr>' + row.map(c => `<td>${c}</td>`).join('') + '</tr>';
+        });
+        html += '</tbody></table>';
+        return html;
+      };
+
+      // 将 markdown 转换为 HTML
+      const renderMarkdown = (text) => {
+        if (!text || !text.trim()) return;
+        text = stripPageRefs(text);
+        if (!text.trim()) return;
+
+        const lines = text.split('\n');
+        const inBlock = [];
+        const output = [];
+
+        const flushBlock = () => {
+          if (inBlock.length === 0) return;
+          // 表格检测：至少2行，第二行是 |---| 格式分隔线
+          if (inBlock.length >= 2 && /^\|?[\s:\-|]+\|/.test(inBlock[1])) {
+            const headers = inBlock[0].split('|').map(h => h.trim()).filter(h => h && !/^-+$/.test(h));
+            if (headers.length > 0) {
+              const rows = [];
+              for (let i = 2; i < inBlock.length; i++) {
+                const cells = inBlock[i].split('|').map(c => c.trim()).filter(c => c);
+                if (cells.length > 0) rows.push(cells);
+              }
+              let html = '<table class="md-table"><thead><tr>';
+              html += headers.map(h => `<th>${h}</th>`).join('') + '</tr></thead><tbody>';
+              rows.forEach(row => {
+                html += '<tr>' + row.map(c => `<td>${c}</td>`).join('') + '</tr>';
+              });
+              html += '</tbody></table>';
+              output.push(html);
+              inBlock.length = 0;
+              return;
+            }
+          }
+          // 普通段落
+          output.push(inBlock.map(l => {
+            if (!l.trim()) return '';
+            return l.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+              .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+              .replace(/__(.+?)__/g, '<strong>$1</strong>')
+              .replace(/`([^`]+)`/g, '<code>$1</code>')
+              .replace(/^### (.+)$/, '<h3>$1</h3>')
+              .replace(/^## (.+)$/, '<h2>$1</h2>')
+              .replace(/^# (.+)$/, '<h1>$1</h1>');
+          }).join('<br>'));
+          inBlock.length = 0;
+        };
+
+        for (const line of lines) {
+          if (!line.trim()) { flushBlock(); continue; }
+          inBlock.push(line);
+        }
+        flushBlock();
+        const html = output.filter(Boolean).join('');
+        if (html) { bubbleEl.innerHTML += html; msgs.scrollTop = msgs.scrollHeight; }
       };
 
       // 将思考内容渲染为可折叠块（默认收起）
