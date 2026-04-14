@@ -306,6 +306,14 @@
     .msg.assistant .bubble strong { font-weight: 700; color: #1a1a2e; }
     .msg.assistant .bubble em { font-style: italic; color: #555; }
     .msg.assistant .bubble code { background: #f3f2f0; padding: 1px 5px; border-radius: 4px; font-size: 13px; }
+    .msg.assistant .bubble blockquote {
+      border-left: 3px solid #2563EB;
+      margin: 6px 0; padding: 4px 10px;
+      background: #f0f4ff; border-radius: 0 4px 4px 0;
+      color: #1a1a2e; font-size: 13.5px;
+    }
+    .msg.assistant .bubble strong { font-weight: 700; color: #1a1a2e; }
+    .msg.assistant .bubble em { font-style: italic; color: #555; }
     /* 引用 */
     .msg.assistant .citations {
       padding-top: 10px; margin-top: 10px;
@@ -1052,12 +1060,29 @@
       const renderMarkdown = (text) => {
         if (!text || !text.trim()) return;
         text = text
+          // 块引用（> 原文引用）
+          .replace(/^&gt; (.+)$/gm, '<blockquote>$1</blockquote>')
+          // 加粗 **text** 或 __text__
+          .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+          .replace(/__(.+?)__/g, '<strong>$1</strong>')
+          // 斜体 *text* 或 _text_
+          .replace(/\*(.+?)\*/g, '<em>$1</em>')
+          .replace(/_(.+?)_/g, '<em>$1</em>')
+          // 行内代码 `code`
+          .replace(/`([^`]+)`/g, '<code>$1</code>')
+          // 标题（必须在列表之前处理）
           .replace(/^### (.+)$/gm, '<h3>$1</h3>')
           .replace(/^## (.+)$/gm, '<h2>$1</h2>')
           .replace(/^# (.+)$/gm, '<h1>$1</h1>')
+          // 无序列表
           .replace(/^\- (.+)$/gm, '<li>$1</li>')
+          // 有序列表
           .replace(/^\d+\. (.+)$/gm, '<li>$1</li>')
+          // 换行：连续两个换行 → 段落分隔，单个换行 → <br>
+          .replace(/\n\n/g, '</p><p>')
           .replace(/\n/g, '<br>');
+        // 包一层 <p> 确保块引用等元素独立成段
+        if (!text.startsWith('<')) text = '<p>' + text;
         bubbleEl.innerHTML += text;
         msgs.scrollTop = msgs.scrollHeight;
       };
