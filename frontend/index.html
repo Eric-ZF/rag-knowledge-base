@@ -1229,17 +1229,40 @@
               return;
             }
           }
-          // 普通段落
-          output.push(inBlock.map(l => {
-            if (!l.trim()) return '';
-            return l.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
-              .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-              .replace(/__(.+?)__/g, '<strong>$1</strong>')
-              .replace(/`([^`]+)`/g, '<code>$1</code>')
-              .replace(/^### (.+)$/, '<h3>$1</h3>')
-              .replace(/^## (.+)$/, '<h2>$1</h2>')
-              .replace(/^# (.+)$/, '<h1>$1</h1>');
-          }).join('<br>'));
+          // 普通段落：先合并连续 blockquote 行，再逐行转 HTML
+          const blockquoteLines = [];
+          const normalLines = [];
+          for (const l of inBlock) {
+            if (/^&gt;\s/.test(l)) {
+              blockquoteLines.push(l);
+            } else {
+              if (blockquoteLines.length > 0) {
+                // 合并所有连续 blockquote 行为一个 blockquote
+                const merged = blockquoteLines.map(l => l.replace(/^&gt;\s?/, '')).join('\n');
+                const safe = merged.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+                output.push(`<blockquote>${safe}</blockquote>`);
+                blockquoteLines.length = 0;
+              }
+              normalLines.push(l);
+            }
+          }
+          if (blockquoteLines.length > 0) {
+            const merged = blockquoteLines.map(l => l.replace(/^&gt;\s?/, '')).join('\n');
+            const safe = merged.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+            output.push(`<blockquote>${safe}</blockquote>`);
+          }
+          if (normalLines.length > 0) {
+            output.push(normalLines.map(l => {
+              if (!l.trim()) return '';
+              return l.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+                .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+                .replace(/__(.+?)__/g, '<strong>$1</strong>')
+                .replace(/`([^`]+)`/g, '<code>$1</code>')
+                .replace(/^### (.+)$/, '<h3>$1</h3>')
+                .replace(/^## (.+)$/, '<h2>$1</h2>')
+                .replace(/^# (.+)$/, '<h1>$1</h1>');
+            }).join('<br>'));
+          }
           inBlock.length = 0;
         };
 
