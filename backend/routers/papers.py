@@ -139,6 +139,10 @@ async def upload_paper(
     if len(content) > MAX_FILE_SIZE:
         raise HTTPException(413, f"文件大小超过限制（最大 50MB），当前: {len(content)//1024//1024}MB")
 
+    # PDF 格式校验：检查 magic bytes
+    if content[:4] != b'%PDF':
+        raise HTTPException(400, "文件格式无效：不是有效的 PDF 文件（magic bytes 不匹配）")
+
     if user.get("plan") == "free" and len(user.get("papers", [])) >= 20:
         raise HTTPException(429, "免费用户论文上限 20 篇")
 
@@ -230,6 +234,10 @@ async def confirm_upload(
     content_bytes = await file.read()
     if len(content_bytes) > MAX_FILE_SIZE:
         raise HTTPException(413, f"文件大小超过限制（最大 50MB），当前: {len(content_bytes)//1024//1024}MB")
+
+    # PDF 格式校验：检查 magic bytes
+    if content_bytes[:4] != b'%PDF':
+        raise HTTPException(400, "文件格式无效：不是有效的 PDF 文件（magic bytes 不匹配）")
 
     if user.get("plan") == "free" and len(user.get("papers", [])) >= 20:
         raise HTTPException(429, "免费用户论文上限 20 篇")

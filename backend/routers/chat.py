@@ -48,6 +48,8 @@ def _ready_papers(user):
 @router.post("", response_model=ChatResponse)
 async def chat(req: ChatRequest, user_info: tuple = Depends(get_current_user)):
     _, user = user_info
+    if not req.question or not req.question.strip():
+        raise HTTPException(400, "问题不能为空")
     if not MINIMAX_API_KEY or not MINIMAX_GROUP_ID:
         raise HTTPException(503, "MiniMax API 未配置")
 
@@ -150,6 +152,8 @@ async def chat(req: ChatRequest, user_info: tuple = Depends(get_current_user)):
 @router.post("/stream")
 async def chat_stream(req: ChatRequest, user_info: tuple = Depends(get_current_user)):
     _, user = user_info
+    if not req.question or not req.question.strip():
+        raise HTTPException(400, "问题不能为空")
     if not MINIMAX_API_KEY or not MINIMAX_GROUP_ID:
         raise HTTPException(503, "MiniMax API 未配置")
 
