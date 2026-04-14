@@ -923,6 +923,8 @@ def hybrid_search(vectorstore, query: str, query_embedding_fn, k: int = 10) -> l
     metas = vector_results.get("metadatas", [[]])[0]
     dists = vector_results.get("distances", [[]])[0]
     for rank, (doc, meta, dist) in enumerate(zip(docs, metas, dists), 1):
+        if meta is None:
+            continue  # skip chunks without metadata
         chunk_id = f"{meta.get('paper_id','')}-{meta.get('chunk_index', rank)}"
         d = Document(page_content=doc, metadata=meta)
         d.metadata["_vector_rank"] = rank
