@@ -208,7 +208,6 @@
       border-radius: var(--radius-md);
       border: 1px solid var(--border);
       margin-bottom: 8px;
-      cursor: pointer;
       transition: box-shadow 0.18s, transform 0.18s, border-color 0.18s;
       display: flex;
       align-items: flex-start;
@@ -219,11 +218,6 @@
       transform: translateY(-1px);
       border-color: rgba(37, 99, 235, 0.4);
     }
-    .paper-item .cite-hint {
-      font-size: 14px; opacity: 0; transition: opacity 0.15s;
-      flex-shrink: 0; padding: 4px;
-    }
-    .paper-item:hover .cite-hint { opacity: 1; }
     .paper-item .paper-body { flex: 1; min-width: 0; }
     .paper-item .title { font-size: 14px; font-weight: 500; color: var(--ink-900); }
     .paper-item .meta { font-size: 12px; color: var(--ink-500); margin-top: 4px; }
@@ -231,17 +225,38 @@
       display: inline-block; font-size: 11px;
       padding: 1px 6px; border-radius: 4px; margin-top: 6px;
     }
-
-    /* 删除按钮 */
-    .paper-item .delete-btn {
-      opacity: 1;
-      background: none; border: none; cursor: pointer;
-      font-size: 15px; color: var(--ink-400);
-      padding: 4px 6px; border-radius: var(--radius-sm);
-      flex-shrink: 0; align-self: center;
-      transition: opacity 0.15s, color 0.15s, background 0.15s;
+    /* 卡片右侧操作按钮区 */
+    .paper-actions {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      flex-shrink: 0;
+      align-items: stretch;
     }
-    .paper-item .delete-btn:hover { color: var(--danger); background: rgba(217,54,54,0.08); transform: scale(1.1); }
+    .paper-actions .action-btn {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 5px 10px;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border);
+      background: white;
+      cursor: pointer;
+      font-size: 12px;
+      color: var(--ink-600);
+      white-space: nowrap;
+      transition: all 0.15s;
+    }
+    .paper-actions .cite-btn:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+      background: rgba(37,99,235,0.06);
+    }
+    .paper-actions .delete-btn:hover {
+      border-color: var(--danger);
+      color: var(--danger);
+      background: rgba(220,38,38,0.06);
+    }
 
     .status.ready       { background: rgba(58,107,196,0.12); color: var(--success); }
     .status.processing  { background: rgba(196,75,58,0.12); color: var(--accent); }
@@ -948,7 +963,7 @@
         return;
       }
       container.innerHTML = papers.filter(p => p.status === 'ready').map(p => `
-        <div class="paper-item" data-paper-id="${p.paper_id}" onclick="insertPaperCitation('${p.paper_id}', ${JSON.stringify(p.title).replace(/'/g, "&#39;")})">
+        <div class="paper-item">
           <div class="paper-body">
             <div class="title">${escapeHtml(p.title)}</div>
             <div class="meta">${p.chunks_count ? p.chunks_count + ' 个片段' : '处理中…'}</div>
@@ -958,8 +973,10 @@
               : '❌ 失败'
             }</span>
           </div>
-          <span class="cite-hint" title="点击引用到问题">📎</span>
-          ${p.deletable ? `<button class="delete-btn" title="删除论文" onclick="event.stopPropagation(); confirmDelete('${p.paper_id}', ${JSON.stringify(p.title).replace(/'/g, "&#39;")})">🗑️</button>` : ''}
+          <div class="paper-actions">
+            <button class="action-btn cite-btn" title="引用此论文" onclick="insertPaperCitation('${p.paper_id}', ${JSON.stringify(p.title).replace(/'/g, "&#39;")})">📎 引用</button>
+            <button class="action-btn delete-btn" title="删除论文" onclick="confirmDelete('${p.paper_id}', ${JSON.stringify(p.title).replace(/'/g, "&#39;")})">🗑️</button>
+          </div>
         </div>`).join('');
     } catch(e) {
       console.error('[LoadPapers Error]', e);
