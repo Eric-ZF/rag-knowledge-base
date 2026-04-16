@@ -1784,23 +1784,48 @@
         return text.replace(/📄\s*p\.?\s*\d+/gi, '').replace(/p\.\s*\d+/g, '').trim();
       };
 
+      // 检测文本是否为引用/参考文献内容（LLM 乱写的引用列表）
+      const isReferenceContent = (text) => {
+        if (!text || !text.trim()) return false;
+        const t = text.trim();
+        // 包含 DOI 链接
+        if (/DOI:\s*10\.\d/i.test(t)) return true;
+        // 包含年份+期刊格式，如 (2021)、2021、Vol\.、pp\.、第 期
+        if (/\(\d{4}\)|\d{4}\s+[,，]\s*\d+[,，]\s*\d+[-–]/.test(t)) return true;
+        // 包含"文献标志码""文章编号""年第 期"
+        if (/文献标志码|文章编号|年版|年第 ?期/.test(t)) return true;
+        // 包含"由于本综述"等提示性注释
+        if (/由于本综述|所涉论文的具体作者|片段中未提供/.test(t)) return true;
+        // 包含期刊名常见后缀 [M]. [J]. [C]. [R]. 等
+        if (/\[(M|J|C|R)\]/.test(t)) return true;
+        // 纯引用块：几乎都是英文字符+年份+逗号，无中文句子的
+        if (/^[A-Za-z\s,.\-\(\)\[\]]{30,}$/.test(t) && !/[。？；]/.test(t)) return true;
+        return false;
+      };
+
       // 去掉 LLM 生成的参考文献列表（<h2>引用论文</h2> 和 <h2>参考文献</h2> 整块）
       const stripReferenceBlocks = (text) => {
-        return text
-          // 去掉 <h2>引用论文</h2> 开头的整块（包括后续 bullet list）
-          .replace(/<h2>\s*引用论文\s*<\/h2>[\s\S]*/gi, '')
-          // 去掉 <h2>参考文献</h2> 开头的整块（包括后续所有内容）
-          .replace(/<h2>\s*参考文献\s*<\/h2>[\s\S]*/gi, '')
-          // 去掉 <h2>References</h2> 整块
-          .replace(/<h2>\s*References?\s*<\/h2>[\s\S]*/gi, '')
-          // 去掉行内开头的孤立 bullet（论文标题格式的参考文献条目）
-          // 如 "- Research on the nonlinear..." 或 "- Environmental regulation..."
-          .replace(/\n\s*[-*]\s*(Research\s+on\s+the\s+|Environmental\s+regulation\s+|An\s+analysis\s+|Study\s+of\s+|The\s+effect\s+|Impact\s+of\s+)[^\n]{10,}/gi, '')
-          // 去掉行首的页码引用标注（📄 p.X 或 📄 1）
+        if (!text) return text;
+        // 去掉 h2/h3 引用/参考文献整块（从标题到下一个 h2 或文本末尾）
+        // 匹配 <h2>xxx</h2> 或 <h3>xxx</h3> 开头，后面跟任何内容直到下一个 h2 为止
+        let result = text
+          .replace(/<h[23]>\s*(引用论文|参考文献|References?|文献标志码)[\s\S]*?(?=<h[23]>|$)/gi, '')
+          // 去掉 h3 说明块（包含"关于引用论文的说明"等）
+          .replace(/<h3>\s*关于[^<]{0,50}(引用|参考|说明)[\s\S]*?(?=<h[23]>|$)/gi, '')
+          // 去掉表格（论文列表表格：两列，一列标题一列状态）
+          .replace(/<table[\s\S]*?<\/table>/gi, '')
+          // 去掉 --- 分隔行（参考文献上下的分隔线）
+          .replace(/\n\s*---+/g, '\n')
+          // 去掉行首孤立 bullet（论文标题 bullet list）
+          .replace(/\n\s*[-*]\s+[A-Z][A-Za-z\s]{5,50}\./g, '')
+          // 去掉行首页码标注
           .replace(/📄\s*p\.?\s*\d+/gi, '')
-          // 去掉引用注释行（如 "> 由于本综述..."）
+          // 去掉引用提示注释
           .replace(/\n\s*&gt;\s*由于[\s\S]*$/gm, '')
           .trim();
+        // 再次检查剩余内容是否全为引用（如果整段都是引用，删掉）
+        if (isReferenceContent(result)) return '';
+        return result;
       };
 
       // 渲染 bubble 内所有 KaTeX 数学公式（块级 + 行内）
@@ -1953,15 +1978,17 @@
               if (blockquoteLines.length > 0) {
                 // 合并所有连续 blockquote 行为一个 blockquote
                 const merged = blockquoteLines.map(l => l.replace(/^>\s?/, '')).join('\n');
-                // 先 markdown 替换（加粗/斜体/代码），再 HTML 转义
-                const md = merged
-                  .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-                  .replace(/__(.+?)__/g, '<strong>$1</strong>')
-                  .replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, '<em>$1</em>')
-                  .replace(/~~(.+?)~~/g, '<del>$1</del>')
-                  .replace(/`([^`]+)`/g, '<code>$1</code>');
-                const safe = md.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-                output.push(`<blockquote>${safe}</blockquote>`);
+                // 如果是引用内容（DOI/期刊格式），直接丢弃
+                if (!isReferenceContent(merged)) {
+                  const md = merged
+                    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+                    .replace(/__(.+?)__/g, '<strong>$1</strong>')
+                    .replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, '<em>$1</em>')
+                    .replace(/~~(.+?)~~/g, '<del>$1</del>')
+                    .replace(/`([^`]+)`/g, '<code>$1</code>');
+                  const safe = md.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+                  output.push(`<blockquote>${safe}</blockquote>`);
+                }
                 blockquoteLines.length = 0;
               }
               normalLines.push(l);
@@ -1969,15 +1996,17 @@
           }
           if (blockquoteLines.length > 0) {
             const merged = blockquoteLines.map(l => l.replace(/^>\s?/, '')).join('\n');
-            // 先 markdown 替换，再 HTML 转义
-            const md = merged
-              .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-              .replace(/__(.+?)__/g, '<strong>$1</strong>')
-              .replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, '<em>$1</em>')
-              .replace(/~~(.+?)~~/g, '<del>$1</del>')
-              .replace(/`([^`]+)`/g, '<code>$1</code>');
-            const safe = md.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-            output.push(`<blockquote>${safe}</blockquote>`);
+            // 如果是引用内容（DOI/期刊格式），直接丢弃
+            if (!isReferenceContent(merged)) {
+              const md = merged
+                .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+                .replace(/__(.+?)__/g, '<strong>$1</strong>')
+                .replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, '<em>$1</em>')
+                .replace(/~~(.+?)~~/g, '<del>$1</del>')
+                .replace(/`([^`]+)`/g, '<code>$1</code>');
+              const safe = md.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+              output.push(`<blockquote>${safe}</blockquote>`);
+            }
           }
           if (normalLines.length > 0) {
             output.push(normalLines.map(l => {
