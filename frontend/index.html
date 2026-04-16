@@ -1523,18 +1523,18 @@
             } else {
               renderMathAll(bubbleEl);
             }
-            // 渲染引用来源（论文标题+页码）
-            if (data.citations && data.citations.length > 0) {
-              const citeEl = document.createElement('div');
-              citeEl.className = 'citations';
-              citeEl.innerHTML = '<div class="cite-label">参考文献：</div>' +
-                data.citations.map(c => {
-                  const title = c.title || '未知论文';
-                  const page = c.page ? ` 第${c.page}页` : '';
-                  return `<span class="cite">${title}${page}</span>`;
-                }).join('');
-              assistantEl.appendChild(citeEl);
-            }
+            // 渲染引用来源（论文标题+页码）- 暂时隐藏
+            // if (data.citations && data.citations.length > 0) {
+            //   const citeEl = document.createElement('div');
+            //   citeEl.className = 'citations';
+            //   citeEl.innerHTML = '<div class="cite-label">参考文献：</div>' +
+            //     data.citations.map(c => {
+            //       const title = c.title || '未知论文';
+            //       const page = c.page ? ` 第${c.page}页` : '';
+            //       return `<span class="cite">${title}${page}</span>`;
+            //     }).join('');
+            //   assistantEl.appendChild(citeEl);
+            // }
             // 质量警告
             if (data.quality_warning) {
               const warnEl = document.createElement('div');
