@@ -180,6 +180,25 @@ def build_context(chunks: list[dict]) -> str:
     return "\n\n".join(context_parts)
 
 
+def get_retrieved_paper_list(chunks: list[dict]) -> str:
+    """
+    从 chunks 中提取去重后的论文列表，返回格式化的论文标题列表字符串。
+    用于在 user message 中明确告知 LLM：只能讨论这些论文，禁止凭空提及其他论文。
+    """
+    seen, papers = set(), []
+    for c in chunks:
+        pid = c["paper_id"]
+        if pid in seen:
+            continue
+        seen.add(pid)
+        title = c.get("title") or c.get("paper_id", "未知论文")
+        year = c.get("year") or ""
+        papers.append(f"  - {title}{f' ({year})' if year else ''}")
+    if not papers:
+        return "（论文库中无对应元数据）"
+    return "\n".join(papers)
+
+
 def build_survey_context(chunks: list[dict], theme: str) -> str:
     """
     为文献综述构建上下文，按论文分组，同一论文的片段聚合在一起。
@@ -478,22 +497,36 @@ async def generate_answer(
     if len(chunks) < original_count:
         logger.debug(f"[generate_answer] 过滤掉 {original_count - len(chunks)} 条参考文献 chunks")
 
+    # 明确告知 LLM 只能讨论这些论文，防止凭空提及未检索到的论文
+    paper_list = get_retrieved_paper_list(chunks)
+    paper_constraint = (
+        "【重要约束】你只能基于以下检索到的论文回答，禁止提及这些论文之外的任何论文。\n"
+        '如果问题涉及这些论文中没有的内容，明确说"证据不足"。\n'
+        f"允许讨论的论文列表：\n{paper_list}\n"
+        "---\n\n"
+    )
+
     if mode == "methodology":
         system_prompt = SYSTEM_PROMPT_METHODOLOGY
         user_message = (
-            f"请分析以下论文片段的方法论：\n\n{build_context(chunks)}\n\n"
+            f"请分析以下论文片段的方法论：\n\n"
+            + paper_constraint +
+            f"论文片段：\n{build_context(chunks)}\n\n"
             f"用户问题：{question}"
         )
         max_tokens = 4096
     elif mode == "survey":
         system_prompt = SYSTEM_PROMPT_SURVEY.format(theme=question)
-        user_message = build_survey_context(chunks, question)
+        survey_ctx = build_survey_context(chunks, question)
+        user_message = paper_constraint + survey_ctx
         max_tokens = 8192  # 文献综述需要更长的输出
     else:
         system_prompt = SYSTEM_PROMPT_DEFAULT
         user_message = (
-            f"基于以下论文片段回答问题：\n\n问题：{question}\n\n"
-            f"---\n{build_context(chunks)}\n\n"
+            f"基于以下论文片段回答问题：\n\n"
+            + paper_constraint +
+            f"问题：{question}\n\n"
+            f"论文片段：\n{build_context(chunks)}\n\n"
             f"请根据以上片段回答问题，并在引用部分标注参考来源。"
         )
         max_tokens = 4096
@@ -760,6 +793,15 @@ async def generate_answer_with_self_eval(
 
     chunks = _enrich_chunks(chunks)
 
+    # 明确告知 LLM 只能讨论这些论文，防止凭空提及未检索到的论文
+    paper_list = get_retrieved_paper_list(chunks)
+    paper_constraint = (
+        f"【重要约束】你只能基于以下检索到的论文回答，禁止提及这些论文之外的任何论文。\n"
+        f'如果问题涉及这些论文中没有的内容，明确说"证据不足"。\n'
+        f"允许讨论的论文列表：\n{paper_list}\n"
+        f"---\n\n"
+    )
+
     best_answer = None
     best_score = 0
     best_citations = []
@@ -771,17 +813,22 @@ async def generate_answer_with_self_eval(
     for round_num in range(1, 4):  # 最多3轮
         if mode == "methodology":
             user_message = (
-                f"请分析以下论文片段的方法论：\n\n{build_context(current_chunks)}\n\n"
+                f"请分析以下论文片段的方法论：\n\n"
+                + paper_constraint +
+                f"论文片段：\n{build_context(current_chunks)}\n\n"
                 f"用户问题：{question}"
             )
             max_tokens = 4096
         elif mode == "survey":
-            user_message = build_survey_context(current_chunks, question)
+            survey_ctx = build_survey_context(current_chunks, question)
+            user_message = paper_constraint + survey_ctx
             max_tokens = 8192
         else:
             user_message = (
-                f"基于以下论文片段回答问题：\n\n问题：{question}\n\n"
-                f"---\n{build_context(current_chunks)}\n\n"
+                f"基于以下论文片段回答问题：\n\n"
+                + paper_constraint +
+                f"问题：{question}\n\n"
+                f"论文片段：\n{build_context(current_chunks)}\n\n"
                 f"请根据以上片段回答问题，并在引用部分标注参考来源。"
             )
             max_tokens = 4096
