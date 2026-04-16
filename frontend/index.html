@@ -1302,7 +1302,7 @@
         }
         // 先做 markdown 替换，再做 HTML 转义（避免 & 吃掉 ** 两边的字符）
         const md = line
-          .replace(/^&gt; (.+)$/, '<blockquote>$1</blockquote>')
+          .replace(/^> (.+)$/, '<blockquote>$1</blockquote>')
           .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
           .replace(/__(.+?)__/g, '<strong>$1</strong>')
           .replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, '<em>$1</em>')
@@ -1405,13 +1405,20 @@
           const blockquoteLines = [];
           const normalLines = [];
           for (const l of inBlock) {
-            if (/^&gt;\s/.test(l)) {
+            if (/^>\s/.test(l)) {
               blockquoteLines.push(l);
             } else {
               if (blockquoteLines.length > 0) {
                 // 合并所有连续 blockquote 行为一个 blockquote
-                const merged = blockquoteLines.map(l => l.replace(/^&gt;\s?/, '')).join('\n');
-                const safe = merged.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+                const merged = blockquoteLines.map(l => l.replace(/^>\s?/, '')).join('\n');
+                // 先 markdown 替换（加粗/斜体/代码），再 HTML 转义
+                const md = merged
+                  .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+                  .replace(/__(.+?)__/g, '<strong>$1</strong>')
+                  .replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, '<em>$1</em>')
+                  .replace(/~~(.+?)~~/g, '<del>$1</del>')
+                  .replace(/`([^`]+)`/g, '<code>$1</code>');
+                const safe = md.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
                 output.push(`<blockquote>${safe}</blockquote>`);
                 blockquoteLines.length = 0;
               }
@@ -1419,8 +1426,15 @@
             }
           }
           if (blockquoteLines.length > 0) {
-            const merged = blockquoteLines.map(l => l.replace(/^&gt;\s?/, '')).join('\n');
-            const safe = merged.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+            const merged = blockquoteLines.map(l => l.replace(/^>\s?/, '')).join('\n');
+            // 先 markdown 替换，再 HTML 转义
+            const md = merged
+              .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+              .replace(/__(.+?)__/g, '<strong>$1</strong>')
+              .replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, '<em>$1</em>')
+              .replace(/~~(.+?)~~/g, '<del>$1</del>')
+              .replace(/`([^`]+)`/g, '<code>$1</code>');
+            const safe = md.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
             output.push(`<blockquote>${safe}</blockquote>`);
           }
           if (normalLines.length > 0) {
