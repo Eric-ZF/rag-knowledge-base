@@ -859,7 +859,7 @@
         </div>
         <p id="upload-zone-text">📄 拖拽 PDF 到这里，或点击选择文件</p>
         <p class="hint">仅支持 PDF · 免费用户上限 20 篇</p>
-        <input type="file" id="file-input" accept=".pdf" style="display:none" />
+        <input type="file" id="file-input" accept=".pdf" multiple style="display:none" />
       </div>
       <div id="upload-progress" style="padding:0 24px 8px;font-size:12px;display:none">
         <div id="progress-label" style="color:var(--ink-500);margin-bottom:4px;">准备中…</div>
@@ -1110,140 +1110,155 @@
   const uploadZone = document.getElementById('upload-zone');
   const fileInput  = document.getElementById('file-input');
 
+  /* ── 批量上传 ─────────────────────────────────────── */
+  let batchStatusTimer = null;
+
   uploadZone.addEventListener('click', () => { if (!uploading) fileInput.click(); });
   uploadZone.addEventListener('dragover', e => { e.preventDefault(); uploadZone.classList.add('drag-over'); });
   uploadZone.addEventListener('dragleave', () => uploadZone.classList.remove('drag-over'));
   uploadZone.addEventListener('drop', e => {
     e.preventDefault(); uploadZone.classList.remove('drag-over');
     if (uploading) return;
-    const f = e.dataTransfer.files[0];
-    if (f) handleFile(f);
+    const files = Array.from(e.dataTransfer.files).filter(f => f.name.endsWith('.pdf'));
+    if (files.length > 0) handleFiles(files);
   });
-  fileInput.addEventListener('change', () => { if (fileInput.files[0]) handleFile(fileInput.files[0]); });
+  fileInput.addEventListener('change', () => {
+    if (fileInput.files.length > 0) {
+      handleFiles(Array.from(fileInput.files));
+      fileInput.value = ''; // reset so same file can be re-uploaded
+    }
+  });
 
-  async function handleFile(file) {
-    if (!file.name.endsWith('.pdf')) { showToast('只支持 PDF 文件', 'error'); return; }
-    if (file.size > 50 * 1024 * 1024) { showToast('文件超过 50MB 限制', 'error'); return; }
+  async function handleFiles(files) {
+    if (!files || files.length === 0) return;
+    // 前置检查
+    const invalid = files.filter(f => !f.name.endsWith('.pdf'));
+    if (invalid.length) { showToast('只支持 PDF 文件', 'error'); return; }
+    const oversized = files.filter(f => f.size > 50 * 1024 * 1024);
+    if (oversized.length) { showToast('部分文件超过 50MB 限制', 'error'); return; }
+
     uploading = true;
     const zone = document.getElementById('upload-zone');
     const spinner = document.getElementById('upload-spinner');
     const zoneText = document.getElementById('upload-zone-text');
-    spinner.style.display = 'block';
-    zone.classList.add('uploading');
-    zoneText.textContent = '正在上传…';
-
     const progressDiv = document.getElementById('upload-progress');
     const fill = document.getElementById('progress-fill');
     const label = document.getElementById('progress-label');
+    spinner.style.display = 'block';
+    zone.classList.add('uploading');
     progressDiv.style.display = 'block';
     fill.style.width = '0%';
-    label.textContent = '上传中…';
 
-    let sseEnded = false;
-    let uploadDone = false;
-
+    if (files.length === 1) {
+      zoneText.textContent = '正在上传…';
+      label.textContent = '上传中…';
+    } else {
+      zoneText.textContent = `正在上传 ${files.length} 个文件…`;
+      label.textContent = `上传中 0/${files.length}…`;
+    }
 
     try {
-      // 用 fetch + SSE 进度
-      const xhr = new XMLHttpRequest();
+      // ── 批量上传 ───────────────────────────────────
       const formData = new FormData();
-      formData.append('file', file);
+      files.forEach(f => formData.append('files', f));
       formData.append('folder_id', uploadFolderId || '');
 
+      const xhr = new XMLHttpRequest();
       const uploadPromise = new Promise((resolve, reject) => {
         xhr.upload.onprogress = e => {
           if (e.lengthComputable) {
-            const pct = Math.round((e.loaded / e.total) * 40);
+            const pct = Math.round((e.loaded / e.total) * 100);
             fill.style.width = pct + '%';
-            label.textContent = `上传中 ${pct}%`;
+            if (files.length === 1) {
+              label.textContent = `上传中 ${pct}%`;
+            } else {
+              label.textContent = `上传中 ${pct}%（${files.length} 个文件）`;
+            }
           }
         };
         xhr.onload = () => {
           if (xhr.status === 200 || xhr.status === 201) {
-            uploadDone = true;
-            fill.style.width = '40%'; // upload done, switch to SSE tracking
-            label.textContent = '上传完成，已开始索引…';
             try {
               const resp = JSON.parse(xhr.responseText);
-              resolve(resp.paper_id);
-            } catch { resolve(null); }
+              resolve(resp);
+            } catch { reject(new Error('响应格式错误')); }
           } else {
-            try { const d = JSON.parse(xhr.responseText); reject(new Error(d.detail || `上传失败 HTTP ${xhr.status}`)); }
+            try { const d = JSON.parse(xhr.responseText); reject(new Error(d.detail || `HTTP ${xhr.status}`)); }
             catch { reject(new Error(`上传失败 HTTP ${xhr.status}`)); }
           }
         };
         xhr.onerror = () => reject(new Error('网络错误'));
-        xhr.open('POST', API + '/papers/upload');
+        xhr.open('POST', API + '/papers/batch-upload');
         xhr.setRequestHeader('Authorization', `Bearer ${token}`);
         xhr.send(formData);
       });
 
-      const paperId = await uploadPromise;
+      const result = await uploadPromise;
 
-      // ── 轮询索进进度（40% → 100%，最多 5 分钟）─────────
-      if (paperId) {
-        let polls = 0;
-        const maxPolls = 60; // 最多 60 次（5 分钟）
-        const stageLabels = {
-          // 细粒度阶段（后端 processing_events 发出的 stage）
-          parsing_pages:    '🔍 正在识别页面结构…',
-          parsing_text:     '📄 正在提取文本内容…',
-          parsing_tables:   '📊 正在解析表格…',
-          parsing_done:     '✅ 版面解析完成',
-          chunking:         '✂️ 正在切分文档…',
-          chunking_done:    '✅ 语义分块完成',
-          embedding:        '🧠 正在生成向量…',
-          embedding_done:   '✅ 向量生成完成',
-          indexing:         '💾 正在写入索引…',
-          complete:         '🎉 索引完成',
-          // 兜底
-          parsing:          '正在解析 PDF…',
-          embedding:        '正在生成向量…',
-          processing:       '正在处理中…',
-        };
-        function pollProgress() {
-          polls++;
-          api('GET', `/papers/${paperId}/status`).then(data => {
-            const status = data.status;
-            if (status === 'ready') {
-              fill.style.width = '100%';
-              label.textContent = '索引完成';
-              progressDiv.style.display = 'none';
-              showToast('论文索引完成', 'success');
-              loadPapers();
-              loadQuota();
-            } else if (status === 'error' || status === 'failed') {
-              progressDiv.style.display = 'none';
-              showToast('索引失败：' + (data.error || '未知错误'), 'error');
-              loadPapers();
-            } else {
-              // "processing" — 优先用后端细粒度 stage_label，否则用 stageLabels 兜底
-              const pct = data.progress != null
-                ? Math.round(data.progress * 100)
-                : Math.round(40 + (polls / maxPolls) * 58);
-              fill.style.width = pct + '%';
-              label.textContent = data.stage_label || stageLabels[data.stage] || stageLabels[status] || `正在处理中… ${pct}%`;
-              if (polls < maxPolls) {
-                setTimeout(pollProgress, 5000);
-              } else {
-                progressDiv.style.display = 'none';
-                showToast('索引超时，请在论文列表查看状态', 'warning');
-                loadPapers();
-              }
-            }
-          }).catch(() => {
-            // 网络错误，继续轮询
-            if (polls < maxPolls) setTimeout(pollProgress, 5000);
-          });
-        }
-        label.textContent = '正在解析 PDF…';
-        setTimeout(pollProgress, 2000);
-      } else {
-        progressDiv.style.display = 'none';
-        showToast('上传成功', 'success');
-        loadPapers();
-        loadQuota();
+      if (result.errors && result.errors.length > 0) {
+        showToast('部分文件上传失败：' + result.errors[0], 'error');
       }
+
+      // 更新 papers 列表（立即显示 processing 状态）
+      loadPapers();
+      loadQuota();
+
+      const papers = result.papers || [];
+      const allIds = papers.map(p => p.paper_id).join(',');
+
+      if (papers.length === 1) {
+        fill.style.width = '30%';
+        label.textContent = '已上传，开始索引…';
+      } else {
+        fill.style.width = '30%';
+        label.textContent = `已上传 ${papers.length} 个，开始并行索引…`;
+        showToast(`已提交 ${papers.length} 个文件，正在并行处理…`, 'info');
+      }
+
+      // ── 轮询批量状态 ─────────────────────────────
+      let pollCount = 0;
+      const maxPolls = 300; // 最多轮询 25 分钟（300 × 5s）
+      function pollBatch() {
+        pollCount++;
+        api('GET', `/papers/batch-status?ids=${encodeURIComponent(allIds)}`).then(statuses => {
+          const counts = { ready: 0, processing: 0, error: 0 };
+          statuses.forEach(s => { if (s.status === 'ready') counts.ready++; else if (s.status === 'processing') counts.processing++; else counts.error++; });
+          const total = statuses.length;
+          const pct = Math.round(30 + (pollCount / maxPolls) * 68);
+          fill.style.width = pct + '%';
+          if (counts.ready === total) {
+            // 全部完成
+            fill.style.width = '100%';
+            label.textContent = `全部完成（${total} 篇）`;
+            progressDiv.style.display = 'none';
+            showToast(`${total} 篇论文已上传并索引完成`, 'success');
+            loadPapers();
+            loadQuota();
+            stopBatchPoll();
+          } else if (counts.error > 0 && counts.processing === 0) {
+            // 全部结束（有错误）
+            progressDiv.style.display = 'none';
+            showToast(`${counts.error} 篇索引失败，请查看论文列表`, 'error');
+            loadPapers();
+            stopBatchPoll();
+          } else {
+            const done = counts.ready + counts.error;
+            label.textContent = `索引中 ${done}/${total}…`;
+            if (pollCount < maxPolls) {
+              batchStatusTimer = setTimeout(pollBatch, 5000);
+            } else {
+              progressDiv.style.display = 'none';
+              showToast('索引超时，请在论文列表查看状态', 'warning');
+              loadPapers();
+              stopBatchPoll();
+            }
+          }
+        }).catch(() => {
+          if (pollCount < maxPolls) batchStatusTimer = setTimeout(pollBatch, 5000);
+        });
+      }
+
+      batchStatusTimer = setTimeout(pollBatch, 3000);
 
     } catch(e) {
       console.error('[Upload Error]', e);
@@ -1254,8 +1269,11 @@
       spinner.style.display = 'none';
       zone.classList.remove('uploading');
       zoneText.textContent = '📄 拖拽 PDF 到这里，或点击选择文件';
-      // progressDiv hidden by polling oncomplete/onerror
     }
+  }
+
+  function stopBatchPoll() {
+    if (batchStatusTimer) { clearTimeout(batchStatusTimer); batchStatusTimer = null; }
   }
 
   /* ── 文件夹管理 ──────────────────────────────────────── */

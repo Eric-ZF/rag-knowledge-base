@@ -278,6 +278,138 @@ async def upload_paper(
     return PaperUploadResponse(paper_id=paper_id, title=title, status="processing", folder_id=folder_id)
 
 
+# ─── 批量上传 ────────────────────────────────────────
+class BatchUploadItem(BaseModel):
+    paper_id: str
+    title: str
+    status: str
+
+class BatchUploadResponse(BaseModel):
+    total: int
+    papers: list[BatchUploadItem]
+    errors: list[str]
+
+class BatchStatusItem(BaseModel):
+    paper_id: str
+    title: str
+    status: str
+    chunks_count: int | None
+    error: str | None
+
+@router.post("/batch-upload", response_model=BatchUploadResponse)
+async def batch_upload_papers(
+    files: list[UploadFile] = File(...),
+    folder_id: str = Form(...),
+    user_info: tuple = Depends(get_current_user),
+):
+    """批量上传多个 PDF，同时并行处理"""
+    user_id, user = user_info
+    if not MINIMAX_API_KEY or not MINIMAX_GROUP_ID:
+        raise HTTPException(503, "MiniMax API 未配置")
+
+    from folders_db import get as get_folder
+    folder = get_folder(folder_id)
+    if not folder or folder["user_id"] != user_id:
+        raise HTTPException(403, "文件夹不存在")
+
+    MAX_FILE_SIZE = 50 * 1024 * 1024
+    MAX_BATCH = 20
+    if len(files) > MAX_BATCH:
+        raise HTTPException(400, f"单次最多上传 {MAX_BATCH} 个文件")
+
+    if user.get("plan") == "free":
+        user_papers = [p for p in get_papers_db().values() if p.get("user_id") == user_id and p.get("status") == "ready"]
+        if len(user_papers) + len(files) > 20:
+            raise HTTPException(429, f"免费用户上限 20 篇，此次上传 {len(files)} 篇会超限")
+
+    results: list[BatchUploadItem] = []
+    errors: list[str] = []
+
+    for file in files:
+        if not file.filename.endswith(".pdf"):
+            errors.append(f"{file.filename}: 只支持 PDF 文件")
+            continue
+        try:
+            content = await file.read()
+            if len(content) > MAX_FILE_SIZE:
+                errors.append(f"{file.filename}: 超过 50MB 限制")
+                continue
+            if content[:4] != b'%PDF':
+                errors.append(f"{file.filename}: 不是有效的 PDF 文件")
+                continue
+
+            content_hash = _compute_content_hash(content)
+
+            # 查重（同一文件夹内）
+            folder_papers = get_folder_papers(folder_id)
+            existing = [p for p in folder_papers if p.get("content_hash") == content_hash]
+            if existing:
+                dup = existing[0]
+                results.append(BatchUploadItem(
+                    paper_id=dup["paper_id"],
+                    title=dup.get("title", file.filename),
+                    status=dup.get("status", "ready"),
+                ))
+                continue
+
+            paper_id = str(uuid.uuid4())
+            title = file.filename.replace(".pdf", "").strip()
+            os.makedirs(PAPERS_DIR, exist_ok=True)
+            pdf_path = f"{PAPERS_DIR}/{paper_id}.pdf"
+            Path(pdf_path).write_bytes(content)
+
+            upsert_paper(paper_id, {
+                "paper_id": paper_id,
+                "user_id": user_id,
+                "folder_id": folder_id,
+                "title": title,
+                "status": "processing",
+                "chunks_count": None,
+                "content_hash": content_hash,
+                "collection": _col(user_id),
+                "pdf_path": pdf_path,
+                "error": None,
+                "created_at": datetime.utcnow().isoformat(),
+            })
+            # 立即触发后台处理（不等待）
+            import asyncio
+            asyncio.get_event_loop().run_in_executor(
+                None, _process_pdf_background, paper_id, pdf_path, _col(user_id), title
+            )
+            results.append(BatchUploadItem(
+                paper_id=paper_id,
+                title=title,
+                status="processing",
+            ))
+        except Exception as e:
+            errors.append(f"{file.filename}: {str(e)[:50]}")
+
+    return BatchUploadResponse(total=len(results), papers=results, errors=errors)
+
+
+@router.get("/batch-status")
+async def batch_status(
+    ids: str = "",  # comma-separated paper_ids
+    user_info: tuple = Depends(get_current_user),
+):
+    """批量查询论文状态（前端轮询用）"""
+    _, _ = user_info
+    if not ids:
+        return []
+    paper_ids = [x.strip() for x in ids.split(",") if x.strip()]
+    papers_db = get_papers_db()
+    return [
+        {
+            "paper_id": pid,
+            "title": papers_db[pid].get("title", "") if pid in papers_db else "",
+            "status": papers_db[pid].get("status", "") if pid in papers_db else "unknown",
+            "chunks_count": papers_db[pid].get("chunks_count") if pid in papers_db else None,
+            "error": papers_db[pid].get("error") if pid in papers_db else None,
+        }
+        for pid in paper_ids
+    ]
+
+
 # ─── SSE 事件 ───────────────────────────────────────
 @router.get("/{paper_id}/events")
 async def paper_events(paper_id: str, user_info: tuple = Depends(get_current_user)):
