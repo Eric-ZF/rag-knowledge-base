@@ -566,7 +566,7 @@
       background: #fafbff;
       border: 1.5px solid #ddd6fe;
       border-radius: 12px;
-      margin-bottom: 12px;
+      margin-bottom: 14px;
       overflow: hidden;
       box-shadow: 0 2px 12px rgba(139,92,246,0.1);
     }
@@ -629,31 +629,28 @@
       0%, 100% { opacity: 0.4; transform: translateY(-50%) scale(0.8); }
       50% { opacity: 1; transform: translateY(-50%) scale(1.1); }
     }
+    /* 展开时：顶部加"展开状态"指示 */
+    .msg.assistant .thinking-block[open] {
+      border-color: #8b5cf6;
+    }
 
-    /* ── 正式回答：醒目的分隔线 ─────────────────────────────── */
-    .msg.assistant .answer-divider {
+    /* ── 正式回答：醒目标题栏 ─────────────────────────────── */
+    .msg.assistant .answer-header {
       display: flex;
       align-items: center;
-      gap: 12px;
-      margin: 12px 0 14px;
+      gap: 8px;
+      margin: 14px 0 10px;
+      padding: 8px 14px;
+      background: linear-gradient(135deg, #eff6ff, #dbeafe);
+      border: 1.5px solid #93c5fd;
+      border-radius: 10px;
+      font-size: 12px;
+      font-weight: 700;
+      color: #1e40af;
+      letter-spacing: 0.05em;
     }
-    .msg.assistant .answer-divider::before,
-    .msg.assistant .answer-divider::after {
-      content: '';
-      flex: 1;
-      height: 2px;
-      background: linear-gradient(to right, transparent, #818cf8, transparent);
-    }
-    .msg.assistant .answer-divider span {
-      font-size: 11px;
-      font-weight: 900;
-      color: #fff;
-      white-space: nowrap;
-      letter-spacing: 0.08em;
-      background: linear-gradient(135deg, #6366f1, #8b5cf6);
-      padding: 4px 16px;
-      border-radius: 20px;
-      box-shadow: 0 2px 8px rgba(99,102,241,0.35);
+    .msg.assistant .answer-header .answer-icon {
+      font-size: 14px;
     }
 
     /* ── 文件夹树 ─────────────────────────────────────── */
@@ -1817,11 +1814,6 @@
         // 思考块渲染完后触发 KaTeX
         renderMathAll(details);
         bubbleEl.appendChild(details);
-        // 在思考块和回答之间加分隔
-        const sep = document.createElement('div');
-        sep.className = 'answer-divider';
-        sep.innerHTML = '<span>💡 正式回答</span>';
-        bubbleEl.appendChild(sep);
       };
 
       const flushLine = () => {
@@ -1840,6 +1832,11 @@
           } else if (data.type === 'done') {
             const { thinking, answer } = extractThinking(tokBuf);
             renderThinkingBlocks(thinking);
+            // 无论有没有思考块，正式回答前都加标题
+            const ansHeader = document.createElement('div');
+            ansHeader.className = 'answer-header';
+            ansHeader.innerHTML = '<span class="answer-icon">💡</span><span>正式回答</span>';
+            bubbleEl.appendChild(ansHeader);
             if (answer.trim()) {
               const esc = answer.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
               renderMarkdown(esc);
