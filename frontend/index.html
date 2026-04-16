@@ -996,6 +996,138 @@
     document.getElementById('user-email').textContent = userPhone ? `📱 ${userPhone}` : '';
     loadFolders();
     loadQuota();
+    // 恢复刷新前正在处理的论文轮询
+    restorePendingUploads();
+  }
+
+  /* ── 断点续传：刷新后恢复上传/处理进度 ──────── */
+  const PENDING_KEY = 'pending_uploads';
+
+  function savePendingUploads(paperIds, folderId) {
+    localStorage.setItem(PENDING_KEY, JSON.stringify({
+      paperIds,
+      folderId,
+      timestamp: Date.now(),
+    }));
+  }
+
+  function clearPendingUploads() {
+    localStorage.removeItem(PENDING_KEY);
+  }
+
+  function getPendingUploads() {
+    try {
+      const raw = localStorage.getItem(PENDING_KEY);
+      if (!raw) return null;
+      const data = JSON.parse(raw);
+      // 超过 30 分钟自动清理
+      if (Date.now() - data.timestamp > 30 * 60 * 1000) {
+        clearPendingUploads();
+        return null;
+      }
+      return data;
+    } catch { return null; }
+  }
+
+  async function restorePendingUploads() {
+    const pending = getPendingUploads();
+    if (!pending || !pending.paperIds || pending.paperIds.length === 0) return;
+    const { paperIds, folderId } = pending;
+
+    // 恢复上传文件夹上下文
+    if (folderId) {
+      uploadFolderId = folderId;
+      renderUploadFolderSelect();
+      const sel = document.getElementById('upload-folder-select');
+      if (sel) sel.value = folderId;
+    }
+
+    // 找到还在 processing 的 paper
+    const allIds = paperIds.join(',');
+    try {
+      const statuses = await api('GET', `/papers/batch-status?ids=${encodeURIComponent(allIds)}`);
+      const stillProcessing = statuses.filter(s => s.status === 'processing');
+      if (stillProcessing.length === 0) {
+        clearPendingUploads();
+        loadPapers();
+        loadQuota();
+        return;
+      }
+
+      // 恢复进度条 UI
+      uploading = true;
+      const zone = document.getElementById('upload-zone');
+      const spinner = document.getElementById('upload-spinner');
+      const progressDiv = document.getElementById('upload-progress');
+      const fill = document.getElementById('progress-fill');
+      const label = document.getElementById('progress-label');
+      spinner.style.display = 'block';
+      zone.classList.add('uploading');
+      progressDiv.style.display = 'block';
+      fill.style.width = '30%';
+      label.textContent = `恢复监控 ${stillProcessing.length} 篇论文…`;
+
+      showToast(`检测到 ${paperIds.length} 篇论文正在处理中，恢复监控…`, 'info');
+
+      let pollCount = 0;
+      const maxPolls = 300;
+
+      function pollBatch() {
+        pollCount++;
+        api('GET', `/papers/batch-status?ids=${encodeURIComponent(allIds)}`).then(statuses => {
+          const counts = { ready: 0, processing: 0, error: 0 };
+          statuses.forEach(s => { if (s.status === 'ready') counts.ready++; else if (s.status === 'processing') counts.processing++; else counts.error++; });
+          const total = statuses.length;
+          const pct = Math.round(30 + (pollCount / maxPolls) * 68);
+          fill.style.width = pct + '%';
+          if (counts.ready === total) {
+            fill.style.width = '100%';
+            label.textContent = `全部完成（${total} 篇）`;
+            progressDiv.style.display = 'none';
+            showToast(`${total} 篇论文已上传并索引完成`, 'success');
+            loadPapers();
+            loadQuota();
+            stopBatchPoll();
+            clearPendingUploads();
+          } else if (counts.error > 0 && counts.processing === 0) {
+            progressDiv.style.display = 'none';
+            showToast(`${counts.error} 篇索引失败，请查看论文列表`, 'error');
+            loadPapers();
+            stopBatchPoll();
+            clearPendingUploads();
+          } else {
+            const done = counts.ready + counts.error;
+            label.textContent = `索引中 ${done}/${total}…`;
+            if (pollCount < maxPolls) {
+              batchStatusTimer = setTimeout(pollBatch, 5000);
+            } else {
+              progressDiv.style.display = 'none';
+              showToast('索引超时，请在论文列表查看状态', 'warning');
+              loadPapers();
+              stopBatchPoll();
+              clearPendingUploads();
+            }
+          }
+        }).catch(() => {
+          if (pollCount < maxPolls) batchStatusTimer = setTimeout(pollBatch, 5000);
+        });
+      }
+
+      batchStatusTimer = setTimeout(pollBatch, 2000);
+    } catch(e) {
+      clearPendingUploads();
+    }
+  }
+
+  function stopBatchPoll() {
+    if (batchStatusTimer) { clearTimeout(batchStatusTimer); batchStatusTimer = null; }
+    uploading = false;
+    const spinner = document.getElementById('upload-spinner');
+    const zone = document.getElementById('upload-zone');
+    const zoneText = document.getElementById('upload-zone-text');
+    if (spinner) spinner.style.display = 'none';
+    if (zone) zone.classList.remove('uploading');
+    if (zoneText) zoneText.textContent = '📄 拖拽 PDF 到这里，或点击选择文件';
   }
 
   function logout() {
@@ -1205,6 +1337,8 @@
 
       const papers = result.papers || [];
       const allIds = papers.map(p => p.paper_id).join(',');
+      // 保存到 localStorage，刷新后可断点续传
+      savePendingUploads(papers.map(p => p.paper_id), uploadFolderId);
 
       if (papers.length === 1) {
         fill.style.width = '30%';
@@ -1264,6 +1398,8 @@
       console.error('[Upload Error]', e);
       showToast('上传失败：' + e.message, 'error');
       progressDiv.style.display = 'none';
+      clearPendingUploads();
+      stopBatchPoll();
     } finally {
       uploading = false;
       spinner.style.display = 'none';
