@@ -1334,10 +1334,12 @@
         }
         // 对单元格内容做 markdown 转义（加粗、斜体等）
         const cellMd = (s) => s
-          .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
           .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
           .replace(/__(.+?)__/g, '<strong>$1</strong>')
-          .replace(/`([^`]+)`/g, '<code>$1</code>');
+          .replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, '<em>$1</em>')
+          .replace(/~~(.+?)~~/g, '<del>$1</del>')
+          .replace(/`([^`]+)`/g, '<code>$1</code>')
+          .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
         let html = '<table class="md-table"><thead><tr>';
         html += headers.map(h => `<th>${cellMd(h)}</th>`).join('') + '</tr></thead><tbody>';
         rows.forEach(row => {
@@ -1375,19 +1377,30 @@
           const pipeCount = (line) => (line.match(/\|/g) || []).length;
           const isTableBlock = (lines) => {
             if (lines.length < 2) return false;
+            // A: 标准 |---| 格式
             if (isSeparator(lines[1])) return true;
             const counts = lines.map(pipeCount);
-            return counts[0] >= 2 && counts.every(c => c === counts[0]);
+            if (counts[0] >= 2 && counts.every(c => c === counts[0])) return true;
+            // B: 空格分隔的表格（各行列数一致且 >= 2 列）
+            const colCount = (line) => (line.trim().match(/\s{2,}/g) || []).length + 1;
+            const spaceCts = lines.map(colCount);
+            if (spaceCts[0] >= 2 && spaceCts.every(c => c === spaceCts[0])) return true;
+            return false;
           };
 
           if (isTableBlock(inBlock)) {
+            // 判断是否为 pipe 格式（有 | 则用 | 拆分，否则用 \s{2,} 空格拆分）
+            const hasPipe = inBlock.some(l => /\|/.test(l));
             const hasSep = inBlock.length >= 2 && isSeparator(inBlock[1]);
             const dataStart = hasSep ? 2 : 0;
-            const headers = inBlock[0].split('|').map(h => h.trim()).filter(h => h && !/^\-+$/.test(h));
+            const splitRow = hasPipe
+              ? (line) => line.split('|').map(c => c.trim()).filter(c => c && !/^\-+$/.test(c))
+              : (line) => line.trim().split(/\s{2,}/).map(c => c.trim()).filter(c => c);
+            const headers = splitRow(inBlock[0]);
             if (headers.length > 0) {
               const rows = [];
               for (let i = dataStart; i < inBlock.length; i++) {
-                const cells = inBlock[i].split('|').map(c => c.trim()).filter(c => c && !/^\-+$/.test(c));
+                const cells = splitRow(inBlock[i]);
                 if (cells.length > 0) rows.push(cells);
               }
               let html = '<table class="md-table"><thead><tr>';
