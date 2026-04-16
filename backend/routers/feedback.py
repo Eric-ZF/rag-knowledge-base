@@ -47,8 +47,12 @@ async def my_quota(user_info: tuple = Depends(get_current_user)):
     _, user = user_info
     plan = user.get("plan", "free")
     limit = 999 if plan == "pro" else 20
+    # Phase 0.8: 从 papers_db 而非 user.papers 计数
+    from data import get_user_papers
+    papers = get_user_papers(user["user_id"])
+    ready_count = len([p for p in papers if p.get("status") == "ready"])
     return {
-        "papers_used": len(user.get("papers", [])),
+        "papers_used": ready_count,
         "papers_limit": limit,
         "plan": plan,
     }
