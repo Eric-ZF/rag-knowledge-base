@@ -11,8 +11,8 @@ from routers.auth import get_current_user
 router = APIRouter(tags=["feedback"])
 
 class QuotaResponse(BaseModel):
-    used: int
-    limit: int
+    papers_used: int
+    papers_limit: int
     plan: str
 
 class EntryDeleteResponse(BaseModel):
@@ -48,7 +48,7 @@ async def my_quota(user_info: tuple = Depends(get_current_user)):
     plan = user.get("plan", "free")
     limit = 999 if plan == "pro" else 20
     return {
-        "used": len(user.get("papers", [])),
-        "limit": limit,
+        "papers_used": len(user.get("papers", [])),
+        "papers_limit": limit,
         "plan": plan,
     }

@@ -332,6 +332,9 @@
       background: #f0f4ff; border-radius: 0 4px 4px 0;
       color: #1a1a2e; font-size: 13.5px;
     }
+    .msg.assistant .bubble del { text-decoration: line-through; color: #9b97a8; }
+    .msg.assistant .bubble .katex-inline { padding: 0 2px; }
+    .msg.assistant .bubble blockquote .katex-display { margin: 4px 0; }
     /* Markdown 表格 */
     .msg.assistant .bubble .md-table {
       border-collapse: collapse;
@@ -610,7 +613,85 @@
     /* ── 工具函数 ────────────────────────────────────────────── */
     .hidden { display: none !important; }
     .error-msg { color: var(--danger); font-size: 13px; margin-top: 8px; text-align: center; }
+
+    /* ── KaTeX 数学公式 ─────────────────────────────────────── */
+    .katex-display { overflow-x: auto; overflow-y: hidden; padding: 4px 0; }
+    .katex { font-size: 1.05em; }
+
+    /* ── 改进后的思考块（更醒目）────────────────────────────── */
+    .msg.assistant .thinking-block {
+      background: #f0efff;
+      border: 1.5px solid #a78bfa;
+      border-radius: 10px;
+      margin-bottom: 10px;
+      font-size: 13px;
+      overflow: hidden;
+      box-shadow: 0 2px 8px rgba(167,139,250,0.15);
+    }
+    .msg.assistant .thinking-block summary {
+      padding: 9px 14px;
+      cursor: pointer;
+      font-weight: 700;
+      color: #6d28d9;
+      font-size: 12.5px;
+      user-select: none;
+      list-style: none;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: #ede9fe;
+    }
+    .msg.assistant .thinking-block summary::-webkit-details-marker { display: none; }
+    .msg.assistant .thinking-block summary .toggle-icon {
+      margin-left: auto;
+      font-size: 11px;
+      opacity: 0.7;
+      transition: transform 0.2s;
+    }
+    .msg.assistant .thinking-block[open] summary .toggle-icon { transform: rotate(180deg); }
+    .msg.assistant .thinking-block[open] summary {
+      border-bottom: 1px solid #c4b5fd;
+      background: #ede9fe;
+    }
+    .msg.assistant .thinking-block .thinking-content {
+      padding: 10px 14px 12px;
+      color: #4c1d95;
+      line-height: 1.7;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 12.5px;
+    }
+
+    /* ── 改进后的回答分隔线（更醒目）────────────────────────── */
+    .msg.assistant .answer-divider {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin: 8px 0 10px;
+    }
+    .msg.assistant .answer-divider::before,
+    .msg.assistant .answer-divider::after {
+      content: '';
+      flex: 1;
+      height: 1.5px;
+      background: linear-gradient(to right, transparent, #c7d2fe, transparent);
+    }
+    .msg.assistant .answer-divider span {
+      font-size: 11px;
+      font-weight: 800;
+      color: #4338ca;
+      white-space: nowrap;
+      letter-spacing: 0.06em;
+      background: #eef2ff;
+      padding: 3px 12px;
+      border-radius: 20px;
+      border: 1.5px solid #c7d2fe;
+    }
   </style>
+  <!-- KaTeX 数学公式支持 -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" />
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
 </head>
 <body>
 
@@ -1193,18 +1274,50 @@
         return text.replace(/📄\s*p\.?\s*\d+/gi, '').replace(/p\.\s*\d+/g, '').trim();
       };
 
+      // 渲染 bubble 内所有 KaTeX 数学公式（块级 + 行内）
+      const renderMathAll = (bubble) => {
+        if (typeof renderMathInElement !== 'function') return;
+        try {
+          renderMathInElement(bubble, {
+            delimiters: [
+              { left: '$$', right: '$$', display: true },
+              { left: '$', right: '$', display: false },
+            ],
+            throwOnError: false,
+            errorColor: '#dc2626',
+          });
+        } catch(e) {
+          // KaTeX 渲染失败不影响页面显示
+        }
+      };
+
       // 将一行文本渲染为单行 markdown HTML（不加 outer <p>）
       const renderMarkdownLine = (line) => {
         if (!line.trim()) return '';
-        return line
-          .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        // 块级公式 $$...$$ 整行替换
+        if (/^\$\$.+\$\$$/s.test(line)) {
+          const formula = line.replace(/^\$\$|\$\$$/g, '');
+          const id = 'katex-block-' + Math.random().toString(36).slice(2, 8);
+          return `<div class="katex-display" id="${id}" data-formula="${encodeURIComponent(formula)}"></div>`;
+        }
+        // 先做 markdown 替换，再做 HTML 转义（避免 & 吃掉 ** 两边的字符）
+        const md = line
           .replace(/^&gt; (.+)$/, '<blockquote>$1</blockquote>')
           .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
           .replace(/__(.+?)__/g, '<strong>$1</strong>')
+          .replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, '<em>$1</em>')
+          .replace(/(?<!_)_(?!_)(.+?)(?<!_)_(?!_)/g, '<em>$1</em>')
+          .replace(/~~(.+?)~~/g, '<del>$1</del>')
           .replace(/`([^`]+)`/g, '<code>$1</code>')
           .replace(/^### (.+)$/, '<h3>$1</h3>')
           .replace(/^## (.+)$/, '<h2>$1</h2>')
-          .replace(/^# (.+)$/, '<h1>$1</h1>');
+          .replace(/^# (.+)$/, '<h1>$1</h1>')
+          .replace(/([^`$])\$(.+?)\$([^$])/g, '$1<span class="katex-inline" data-formula="$2"></span>$3');
+        // HTML 转义最后做
+        return md
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;');
       };
 
       // 解析 markdown 表格（lines 是连续的表格行）
@@ -1246,19 +1359,41 @@
 
         const flushBlock = () => {
           if (inBlock.length === 0) return;
-          // 表格检测：至少2行，第二行是 |---| 格式分隔线
-          if (inBlock.length >= 2 && /^\|?[\s:\-|]+\|/.test(inBlock[1])) {
-            const headers = inBlock[0].split('|').map(h => h.trim()).filter(h => h && !/^-+$/.test(h));
+
+          // ── 辅助：单元格内容转 HTML（加粗/斜体/代码/公式）
+          const cellMd = (s) => s
+            .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+            .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+            .replace(/__(.+?)__/g, '<strong>$1</strong>')
+            .replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, '<em>$1</em>')
+            .replace(/~~(.+?)~~/g, '<del>$1</del>')
+            .replace(/`([^`]+)`/g, '<code>$1</code>');
+
+          // ── 表格检测 A：有分隔行（标准 |---| 格式）
+          const isSeparator = (line) => /^\|?[\s:\-\|]+\|/.test(line);
+          // ── 表格检测 B：无分隔行，全是 pipe 分隔且列数一致
+          const pipeCount = (line) => (line.match(/\|/g) || []).length;
+          const isTableBlock = (lines) => {
+            if (lines.length < 2) return false;
+            if (isSeparator(lines[1])) return true;
+            const counts = lines.map(pipeCount);
+            return counts[0] >= 2 && counts.every(c => c === counts[0]);
+          };
+
+          if (isTableBlock(inBlock)) {
+            const hasSep = inBlock.length >= 2 && isSeparator(inBlock[1]);
+            const dataStart = hasSep ? 2 : 0;
+            const headers = inBlock[0].split('|').map(h => h.trim()).filter(h => h && !/^\-+$/.test(h));
             if (headers.length > 0) {
               const rows = [];
-              for (let i = 2; i < inBlock.length; i++) {
-                const cells = inBlock[i].split('|').map(c => c.trim()).filter(c => c);
+              for (let i = dataStart; i < inBlock.length; i++) {
+                const cells = inBlock[i].split('|').map(c => c.trim()).filter(c => c && !/^\-+$/.test(c));
                 if (cells.length > 0) rows.push(cells);
               }
               let html = '<table class="md-table"><thead><tr>';
-              html += headers.map(h => `<th>${h}</th>`).join('') + '</tr></thead><tbody>';
+              html += headers.map(h => `<th>${cellMd(h)}</th>`).join('') + '</tr></thead><tbody>';
               rows.forEach(row => {
-                html += '<tr>' + row.map(c => `<td>${c}</td>`).join('') + '</tr>';
+                html += '<tr>' + row.map(c => `<td>${cellMd(c)}</td>`).join('') + '</tr>';
               });
               html += '</tbody></table>';
               output.push(html);
@@ -1266,7 +1401,7 @@
               return;
             }
           }
-          // 普通段落：先合并连续 blockquote 行，再逐行转 HTML
+// 普通段落：先合并连续 blockquote 行，再逐行转 HTML
           const blockquoteLines = [];
           const normalLines = [];
           for (const l of inBlock) {
@@ -1291,13 +1426,24 @@
           if (normalLines.length > 0) {
             output.push(normalLines.map(l => {
               if (!l.trim()) return '';
-              return l.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+              // 块级公式 $$...$$ 单独处理
+              if (/^\$\$.+\$\$$/s.test(l)) {
+                const formula = l.replace(/^\$\$|\$\$$/g, '');
+                const id = 'katex-block-' + Math.random().toString(36).slice(2, 8);
+                return `<div class="katex-display" id="${id}" data-formula="${encodeURIComponent(formula)}"></div>`;
+              }
+              const md = l
                 .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
                 .replace(/__(.+?)__/g, '<strong>$1</strong>')
+                .replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, '<em>$1</em>')
+                .replace(/~~(.+?)~~/g, '<del>$1</del>')
                 .replace(/`([^`]+)`/g, '<code>$1</code>')
                 .replace(/^### (.+)$/, '<h3>$1</h3>')
                 .replace(/^## (.+)$/, '<h2>$1</h2>')
-                .replace(/^# (.+)$/, '<h1>$1</h1>');
+                .replace(/^# (.+)$/, '<h1>$1</h1>')
+                .replace(/([^`$])\$(.+?)\$([^$])/g, '$1<span class="katex-inline" data-formula="$2"></span>$3');
+              return md
+                .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
             }).join('<br>'));
           }
           inBlock.length = 0;
@@ -1310,6 +1456,7 @@
         flushBlock();
         const html = output.filter(Boolean).join('');
         if (html) { bubbleEl.innerHTML += html; msgs.scrollTop = msgs.scrollHeight; }
+        renderMathAll(bubbleEl);
       };
 
       // 将思考内容渲染为可折叠块（默认收起）
@@ -1319,16 +1466,36 @@
         details.className = 'thinking-block';
         const summary = document.createElement('summary');
         const count = blocks.length;
-        summary.textContent = `💭 点击展开 / 收起思考过程 ${count > 1 ? `(${count}段)` : ''}`;
+        summary.innerHTML = `<span>💭</span><span style="font-weight:700">思考过程</span><span style="font-size:11px;opacity:0.75">（点击展开 / 收起）</span><span class="toggle-icon">▼</span>`;
         details.appendChild(summary);
         blocks.forEach((blk, i) => {
-          // 不做 markdown 解析，直接显示原文，保持缩进和换行
+          // 思考内容也支持 markdown 格式（加粗、斜体、代码、公式）
           const p = document.createElement('div');
           p.className = 'thinking-content';
-          p.textContent = blk;
+          // 用 renderMarkdownLine 处理每一行
+          const lines = blk.split('\n');
+          p.innerHTML = lines.map(l => {
+            if (!l.trim()) return '';
+            if (/^\$\$.+\$\$$/s.test(l)) {
+              const formula = l.replace(/^\$\$|\$\$$/g, '');
+              const id = 'katex-block-' + Math.random().toString(36).slice(2, 8);
+              return `<div class="katex-display" id="${id}" data-formula="${encodeURIComponent(formula)}"></div>`;
+            }
+            const md = l
+              .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+              .replace(/__(.+?)__/g, '<strong>$1</strong>')
+              .replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, '<em>$1</em>')
+              .replace(/~~(.+?)~~/g, '<del>$1</del>')
+              .replace(/`([^`]+)`/g, '<code>$1</code>')
+              .replace(/([^`$])\$(.+?)\$([^$])/g, '$1<span class="katex-inline" data-formula="$2"></span>$3');
+            return md
+              .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+          }).join('<br>');
           if (i > 0) p.style.marginTop = '6px';
           details.appendChild(p);
         });
+        // 思考块渲染完后触发 KaTeX
+        renderMathAll(details);
         bubbleEl.appendChild(details);
         // 在思考块和回答之间加分隔
         const sep = document.createElement('div');
@@ -1356,6 +1523,9 @@
             if (answer.trim()) {
               const esc = answer.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
               renderMarkdown(esc);
+              renderMathAll(bubbleEl);
+            } else {
+              renderMathAll(bubbleEl);
             }
             // 渲染引用来源（论文标题+页码）
             if (data.citations && data.citations.length > 0) {
