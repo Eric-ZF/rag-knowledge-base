@@ -17,7 +17,7 @@ from chat import (
 )
 from chat import evaluate_answer as chat_evaluate_answer
 from state import users_db, get_users_db
-from data import get_paper
+from data import get_paper, get_user_papers, get_folder_papers
 from config import MINIMAX_API_KEY, MINIMAX_GROUP_ID, CHAT_MODEL
 from pipeline import search_chunks
 from feedback import get_feedback_store, SCORE_THRESHOLD
@@ -31,6 +31,7 @@ class ChatRequest(BaseModel):
     top_k: int = 8
     mode: Literal["default", "methodology", "survey"] = "default"
     paper_ids: list[str] | None = None
+    folder_ids: list[str] | None = None  # Phase 0.8: 可限定搜索范围
 
 class ChatResponse(BaseModel):
     answer: str
@@ -38,11 +39,15 @@ class ChatResponse(BaseModel):
     meta: dict = {}
 
 
-def _ready_papers(user):
-    return [
-        pid for pid in user.get("papers", [])
-        if (p := get_paper(pid)) and p["status"] == "ready"
-    ]
+def _ready_papers(user, folder_ids=None):
+    # Phase 0.8: 从 papers_db 而非 user.papers 获取
+    if folder_ids:
+        papers = []
+        for fid in folder_ids:
+            papers.extend(get_folder_papers(fid))
+    else:
+        papers = get_user_papers(user["user_id"])
+    return [p["paper_id"] for p in papers if p.get("status") == "ready"]
 
 
 @router.post("", response_model=ChatResponse)
@@ -56,7 +61,7 @@ async def chat(req: ChatRequest, user_info: tuple = Depends(get_current_user)):
     collection = req.collection_name or user["collection"]
     t0 = time.monotonic()
 
-    ready = _ready_papers(user)
+    ready = _ready_papers(user, req.folder_ids)
     if not ready:
         return ChatResponse(
             answer="你的论文库还没有已索引的论文，请先上传 PDF 并等待索引完成。",
@@ -158,7 +163,7 @@ async def chat_stream(req: ChatRequest, user_info: tuple = Depends(get_current_u
         raise HTTPException(503, "MiniMax API 未配置")
 
     collection = req.collection_name or user["collection"]
-    ready = _ready_papers(user)
+    ready = _ready_papers(user, req.folder_ids)
     if not ready:
         async def empty():
             yield "data: " + json.dumps({"type": "done", "answer": "你的论文库还没有已索引的论文。"}) + "\n\n"
