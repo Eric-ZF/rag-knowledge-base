@@ -1072,7 +1072,25 @@ async def search_chunks(
     # k=5 → retrieve_k=30 → RRF 输出30条 → citation 去重(每篇3条)后 ≈ 6-9条
     retrieve_k = top_k * 6 if section_filter else top_k * 6
     # 用扩展 query 做检索（BM25 + 向量都用扩展版本）
-    hybrid_results = hybrid_search(vectorstore, expanded_query, embedding_fn, k=retrieve_k)
+    try:
+        hybrid_results = hybrid_search(vectorstore, expanded_query, embedding_fn, k=retrieve_k)
+    except Exception as e:
+        logger.warning(f"[{safe_collection_name}] 检索失败 ({e})，fallback 到 user_old_bosstest")
+        hybrid_results = []
+
+    # Fallback：如果当前用户 collection 为空或出错，尝试旧 collection（user_old_bosstest）
+    if not hybrid_results and safe_collection_name.startswith("papers_"):
+        logger.debug(f"[{safe_collection_name}] 无检索结果，fallback 到 user_old_bosstest")
+        vectorstore_old = Chroma(
+            collection_name="user_old_bosstest",
+            embedding_function=embedding_fn,
+            persist_directory=persist_directory,
+        )
+        try:
+            hybrid_results = hybrid_search(vectorstore_old, expanded_query, embedding_fn, k=retrieve_k)
+        except Exception as e2:
+            logger.warning(f"[user_old_bosstest] fallback 也失败: {e2}")
+            hybrid_results = []
 
     chunks = []
     for item in hybrid_results:
