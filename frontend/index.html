@@ -784,6 +784,8 @@
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" />
   <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
   <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+  <!-- marked.js markdown parser -->
+  <script src="https://cdn.jsdelivr.net/npm/marked@9.1.6/marked.min.js"></script>
 </head>
 <body>
 
@@ -1785,52 +1787,53 @@
       };
 
       // 检测文本是否为引用/参考文献内容（LLM 乱写的引用列表）
-      const isReferenceContent = (text) => {
-        if (!text || !text.trim()) return false;
+      // marked.js 配置：禁用默认乱码处理
+      if (typeof marked !== 'undefined') {
+        marked.use({ mangle: false, headerIds: false });
+      }
+
+      // 判断一个 heading token 的文字内容是否属于"引用/参考文献"类型
+      const isRefHeading = (text) => {
+        if (!text) return false;
         const t = text.trim();
-        // 包含 DOI 链接
-        if (/DOI:\s*10\.\d/i.test(t)) return true;
-        // 包含年份+期刊格式，如 (2021)、2021、Vol\.、pp\.、第 期
-        if (/\(\d{4}\)|\d{4}\s+[,，]\s*\d+[,，]\s*\d+[-–]/.test(t)) return true;
-        // 包含"文献标志码""文章编号""年第 期"
-        if (/文献标志码|文章编号|年版|年第 ?期/.test(t)) return true;
-        // 包含"由于本综述"等提示性注释
-        if (/由于本综述|所涉论文的具体作者|片段中未提供/.test(t)) return true;
-        // 包含期刊名常见后缀 [M]. [J]. [C]. [R]. 等
-        if (/\[(M|J|C|R)\]/.test(t)) return true;
-        // 纯引用块：几乎都是英文字符+年份+逗号，无中文句子的
-        if (/^[A-Za-z\s,.\-\(\)\[\]]{30,}$/.test(t) && !/[。？；]/.test(t)) return true;
+        // 明确引用类标题
+        if (/引用论文|参考文献|References?|文献标志码/.test(t)) return true;
+        // 综述总结+信息/检索类（"综述总结：关于xxx"、"信息不足"）
+        if (/^(?:\S+\s*)*[综述总结].*?(?:信息不足|检索结果|片段|文献库)/.test(t)) return true;
+        // "关于xxx的说明/分析/评估" 整块
+        if (/^关于.{0,30}(?:说明|分析|评估|信息不足)/.test(t)) return true;
+        // 结论建议摘要块（整块内容都是结论/建议，无实质性正文）
+        if (/^(?:结论|建议|研究发现|主要结论)/.test(t)) return true;
+        // "格式：" 开头（参考文献格式说明）
+        if (/^格式：/.test(t)) return true;
         return false;
       };
 
-      // 去掉 LLM 生成的参考文献列表（<h2>引用论文</h2> 和 <h2>参考文献</h2> 整块）
-      const stripReferenceBlocks = (text) => {
-        if (!text) return text;
-        // 去掉 h2/h3 引用/参考文献整块（从标题到下一个 h2 或文本末尾）
-        // 匹配 <h2>xxx</h2> 或 <h3>xxx</h3> 开头，后面跟任何内容直到下一个 h2 为止
-        let result = text
-          .replace(/<h[23]>\s*(引用论文|参考文献|References?|文献标志码)[\s\S]*?(?=<h[23]>|$)/gi, '')
-          // 去掉 h2/h3 综述总结类整块（包含"综述""总结"且后面有"信息不足""检索"等关键词）
-          .replace(/<h[23]>\s*[^<]{0,30}(综述|总结)[^<]*?(信息不足|检索结果|片段|文献库)[\s\S]*?(?=<h[23]>|$)/gi, '')
-          // 去掉 h2/h3 结论建议类整块（最后包含"建议"或"结论"的摘要块）
-          .replace(/<h[23]>\s*[^<]*(?:结论|建议|研究发现|主要结论)[^<]*?[\s\S]*?(?=<h[23]>|$)/gi, '')
-          // 去掉 h2/h3 "关于xxx的说明" 整块
-          .replace(/<h[23]>\s*关于[^<]{0,50}(?:说明|分析|评估|信息不足)[\s\S]*?(?=<h[23]>|$)/gi, '')
-          // 去掉表格（论文列表表格：两列，一列标题一列状态）
-          .replace(/<table[\s\S]*?<\/table>/gi, '')
-          // 去掉 --- 分隔行（参考文献上下的分隔线）
-          .replace(/\n\s*---+/g, '\n')
-          // 去掉行首孤立 bullet（论文标题 bullet list）
-          .replace(/\n\s*[-*]\s+[A-Z][A-Za-z\s]{5,50}\./g, '')
-          // 去掉行首页码标注
-          .replace(/📄\s*p\.?\s*\d+/gi, '')
-          // 去掉引用提示注释
-          .replace(/\n\s*&gt;\s*由于[\s\S]*$/gm, '')
-          // 去掉 "由于本综述严格基于..." 这类提示句
-          .replace(/由于本综述[\s\S]*$/gm, '')
-          .trim();
-        // 再次检查剩余内容是否全为引用（如果整段都是引用，删掉）
-        if (isReferenceContent(result)) return '';
+      // 在 marked token 数组中，去掉引用整块（从引用标题到同级标题之前）
+      const stripReferenceTokens = (tokens) => {
+        const result = [];
+        let skipUntilLevel = 0; // 0=不跳过；1/2/3=跳过到同级或更低级标题
+        for (let i = 0; i < tokens.length; i++) {
+          const tok = tokens[i];
+          if (tok.type === 'heading') {
+            if (isRefHeading(tok.text)) {
+              skipUntilLevel = tok.depth; // 标记：跳过直到同级或更低级标题
+              continue; // 丢弃当前引用标题本身
+            } else {
+              skipUntilLevel = 0; // 遇到非引用标题，重置
+            }
+          }
+          if (skipUntilLevel > 0) {
+            // 如果当前 token 是同级/更低级标题，说明引用块已结束
+            if (tok.type === 'heading' && tok.depth <= skipUntilLevel) {
+              skipUntilLevel = 0;
+              result.push(tok);
+            }
+            // 否则跳过（丢弃引用块内容）
+            continue;
+          }
+          result.push(tok);
+        }
         return result;
       };
 
@@ -1880,172 +1883,21 @@
           .replace(/>/g, '&gt;');
       };
 
-      // 解析 markdown 表格（lines 是连续的表格行）
-      const parseTable = (lines) => {
-        if (lines.length < 2) return null;
-        // separator 行必须是 |---|... 格式
-        if (!/^\|?[\s:\-|]+\|/.test(lines[1])) return null;
-        const headers = lines[0].split('|').map(h => h.trim()).filter(h => h && !/^-+$/.test(h));
-        if (headers.length === 0) return null;
-        const rows = [];
-        for (let i = 2; i < lines.length; i++) {
-          const cells = lines[i].split('|').map(c => c.trim()).filter(c => c);
-          if (cells.length > 0) rows.push(cells);
-        }
-        // 对单元格内容做 markdown 转义（加粗、斜体等）
-        const cellMd = (s) => s
-          .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-          .replace(/__(.+?)__/g, '<strong>$1</strong>')
-          .replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, '<em>$1</em>')
-          .replace(/~~(.+?)~~/g, '<del>$1</del>')
-          .replace(/`([^`]+)`/g, '<code>$1</code>')
-          .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-        let html = '<table class="md-table"><thead><tr>';
-        html += headers.map(h => `<th>${cellMd(h)}</th>`).join('') + '</tr></thead><tbody>';
-        rows.forEach(row => {
-          html += '<tr>' + row.map(c => `<td>${cellMd(c)}</td>`).join('') + '</tr>';
-        });
-        html += '</tbody></table>';
-        return html;
-      };
-
       // 将 markdown 转换为 HTML
       const renderMarkdown = (text) => {
         if (!text || !text.trim()) return;
-        text = stripReferenceBlocks(stripPageRefs(text));
+        // 去掉页码标注（如 "📄 p.12"），引用块在 AST 层统一过滤
+        text = stripPageRefs(text);
         if (!text.trim()) return;
 
-        const lines = text.split('\n');
-        const inBlock = [];
-        const output = [];
-
-        const flushBlock = () => {
-          if (inBlock.length === 0) return;
-
-          // ── 辅助：单元格内容转 HTML（加粗/斜体/代码/公式）
-          const cellMd = (s) => s
-            .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
-            .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-            .replace(/__(.+?)__/g, '<strong>$1</strong>')
-            .replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, '<em>$1</em>')
-            .replace(/~~(.+?)~~/g, '<del>$1</del>')
-            .replace(/`([^`]+)`/g, '<code>$1</code>');
-
-          // ── 表格检测 A：有分隔行（标准 |---| 格式）
-          const isSeparator = (line) => /^\|?[\s:\-\|]+\|/.test(line);
-          // ── 表格检测 B：无分隔行，全是 pipe 分隔且列数一致
-          const pipeCount = (line) => (line.match(/\|/g) || []).length;
-          const isTableBlock = (lines) => {
-            if (lines.length < 2) return false;
-            // A: 标准 |---| 格式
-            if (isSeparator(lines[1])) return true;
-            const counts = lines.map(pipeCount);
-            if (counts[0] >= 2 && counts.every(c => c === counts[0])) return true;
-            // B: 空格分隔的表格（各行列数一致且 >= 2 列）
-            const colCount = (line) => (line.trim().match(/\s{2,}/g) || []).length + 1;
-            const spaceCts = lines.map(colCount);
-            if (spaceCts[0] >= 2 && spaceCts.every(c => c === spaceCts[0])) return true;
-            return false;
-          };
-
-          if (isTableBlock(inBlock)) {
-            // 判断是否为 pipe 格式（有 | 则用 | 拆分，否则用 \s{2,} 空格拆分）
-            const hasPipe = inBlock.some(l => /\|/.test(l));
-            const hasSep = inBlock.length >= 2 && isSeparator(inBlock[1]);
-            const dataStart = hasSep ? 2 : 0;
-            const splitRow = hasPipe
-              ? (line) => line.split('|').map(c => c.trim()).filter(c => c && !/^\-+$/.test(c))
-              : (line) => line.trim().split(/\s{2,}/).map(c => c.trim()).filter(c => c);
-            const headers = splitRow(inBlock[0]);
-            if (headers.length > 0) {
-              const rows = [];
-              for (let i = dataStart; i < inBlock.length; i++) {
-                const cells = splitRow(inBlock[i]);
-                if (cells.length > 0) rows.push(cells);
-              }
-              let html = '<table class="md-table"><thead><tr>';
-              html += headers.map(h => `<th>${cellMd(h)}</th>`).join('') + '</tr></thead><tbody>';
-              rows.forEach(row => {
-                html += '<tr>' + row.map(c => `<td>${cellMd(c)}</td>`).join('') + '</tr>';
-              });
-              html += '</tbody></table>';
-              output.push(html);
-              inBlock.length = 0;
-              return;
-            }
-          }
-// 普通段落：先合并连续 blockquote 行，再逐行转 HTML
-          const blockquoteLines = [];
-          const normalLines = [];
-          for (const l of inBlock) {
-            if (/^>\s/.test(l)) {
-              blockquoteLines.push(l);
-            } else {
-              if (blockquoteLines.length > 0) {
-                // 合并所有连续 blockquote 行为一个 blockquote
-                const merged = blockquoteLines.map(l => l.replace(/^>\s?/, '')).join('\n');
-                // 如果是引用内容（DOI/期刊格式），直接丢弃
-                if (!isReferenceContent(merged)) {
-                  const md = merged
-                    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-                    .replace(/__(.+?)__/g, '<strong>$1</strong>')
-                    .replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, '<em>$1</em>')
-                    .replace(/~~(.+?)~~/g, '<del>$1</del>')
-                    .replace(/`([^`]+)`/g, '<code>$1</code>');
-                  const safe = md.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-                  output.push(`<blockquote>${safe}</blockquote>`);
-                }
-                blockquoteLines.length = 0;
-              }
-              normalLines.push(l);
-            }
-          }
-          if (blockquoteLines.length > 0) {
-            const merged = blockquoteLines.map(l => l.replace(/^>\s?/, '')).join('\n');
-            // 如果是引用内容（DOI/期刊格式），直接丢弃
-            if (!isReferenceContent(merged)) {
-              const md = merged
-                .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-                .replace(/__(.+?)__/g, '<strong>$1</strong>')
-                .replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, '<em>$1</em>')
-                .replace(/~~(.+?)~~/g, '<del>$1</del>')
-                .replace(/`([^`]+)`/g, '<code>$1</code>');
-              const safe = md.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-              output.push(`<blockquote>${safe}</blockquote>`);
-            }
-          }
-          if (normalLines.length > 0) {
-            output.push(normalLines.map(l => {
-              if (!l.trim()) return '';
-              // 块级公式 $$...$$ 单独处理
-              if (/^\$\$.+\$\$$/s.test(l)) {
-                const formula = l.replace(/^\$\$|\$\$$/g, '');
-                const id = 'katex-block-' + Math.random().toString(36).slice(2, 8);
-                return `<div class="katex-display" id="${id}" data-formula="${encodeURIComponent(formula)}"></div>`;
-              }
-              const md = l
-                .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-                .replace(/__(.+?)__/g, '<strong>$1</strong>')
-                .replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, '<em>$1</em>')
-                .replace(/~~(.+?)~~/g, '<del>$1</del>')
-                .replace(/`([^`]+)`/g, '<code>$1</code>')
-                .replace(/^### (.+)$/, '<h3>$1</h3>')
-                .replace(/^## (.+)$/, '<h2>$1</h2>')
-                .replace(/^# (.+)$/, '<h1>$1</h1>')
-                .replace(/([^`$])\$(.+?)\$([^$])/g, '$1<span class="katex-inline" data-formula="$2"></span>$3');
-              return md
-                .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-            }).join('<br>'));
-          }
-          inBlock.length = 0;
-        };
-
-        for (const line of lines) {
-          if (!line.trim()) { flushBlock(); continue; }
-          inBlock.push(line);
-        }
-        flushBlock();
-        const html = output.filter(Boolean).join('');
+        // marked.js 解析为 token 数组 → 过滤引用 → 渲染为 HTML
+        const tokens = (typeof marked !== 'undefined')
+          ? marked.lexer(text)
+          : [{ type: 'text', raw: text }]; // fallback
+        const cleaned = stripReferenceTokens(tokens);
+        const html = (typeof marked !== 'undefined')
+          ? new marked.Parser().parse(cleaned)
+          : text;
         if (html) { bubbleEl.innerHTML += html; msgs.scrollTop = msgs.scrollHeight; }
         renderMathAll(bubbleEl);
       };
@@ -2105,15 +1957,16 @@
             tokBuf += data.content;
           } else if (data.type === 'done') {
             const { thinking, answer } = extractThinking(tokBuf);
-            const cleanAnswer = stripReferenceBlocks(stripPageRefs(answer));
+            // stripPageRefs 在 renderMarkdown 内部处理，引用块由 AST 层过滤
             renderThinkingBlocks(thinking);
             // 无论有没有思考块，正式回答前都加标题
             const ansHeader = document.createElement('div');
             ansHeader.className = 'answer-header';
             ansHeader.innerHTML = '<span class="answer-icon">💡</span><span>正式回答</span>';
             bubbleEl.appendChild(ansHeader);
-            if (cleanAnswer.trim()) {
-              const esc = cleanAnswer.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            if (answer && answer.trim()) {
+              // renderMarkdown 内部处理：页码过滤 → AST 过滤 → marked 渲染
+              const esc = answer.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
               renderMarkdown(esc);
               renderMathAll(bubbleEl);
             } else {
