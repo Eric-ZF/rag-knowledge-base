@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="light dark" />
   <title>RAG 学术知识库 — Phase 0 验证</title>
   <style>
     /* ── 基础重置 ─────────────────────────────────────────── */
@@ -22,9 +23,27 @@
       --warning: #D97706;           /* 橙色：警告/处理中 */
       --shadow:  0 2px 8px rgba(0,0,0,0.08);
       --shadow-hover: 0 4px 16px rgba(0,0,0,0.12);
+      --shadow-lg: 0 4px 24px rgba(0,0,0,0.1);
       --radius-sm: 6px;
       --radius-md: 10px;
       --radius-lg: 14px;
+    }
+
+    /* ── Dark mode ─────────────────────────────────────────── */
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --ink-900: #f0eeeb;
+        --ink-700: #e0dee9;
+        --ink-500: #a8a5b8;
+        --ink-400: #7c7a8c;
+        --paper:   #1a1a2e;
+        --accent:  #60a5fa;
+        --accent-hover: #3B82F6;
+        --border:  #2d2d44;
+        --shadow:  0 2px 8px rgba(0,0,0,0.3);
+        --shadow-hover: 0 4px 16px rgba(0,0,0,0.4);
+        --shadow-lg: 0 4px 24px rgba(0,0,0,0.3);
+      }
     }
 
     body {
@@ -70,6 +89,15 @@
     @keyframes toastOut {
       from { opacity: 1; transform: translateX(0); }
       to   { opacity: 0; transform: translateX(20px); }
+    }
+
+    /* ── Accessibility: reduce motion ─────────────────────── */
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+      }
     }
 
     /* ── 顶栏 ─────────────────────────────────────────────── */
@@ -157,7 +185,7 @@
     }
     .upload-zone:hover, .upload-zone.drag-over {
       border-color: var(--accent);
-      background: rgba(196, 75, 58, 0.04);
+      background: rgba(37, 99, 235, 0.04);
       transform: translateY(-1px);
       box-shadow: var(--shadow);
     }
@@ -259,7 +287,7 @@
     }
 
     .status.ready       { background: rgba(58,107,196,0.12); color: var(--success); }
-    .status.processing  { background: rgba(196,75,58,0.12); color: var(--accent); }
+    .status.processing  { background: rgba(37,99,235,0.12); color: var(--accent); }
     .status.error       { background: rgba(217,54,54,0.12); color: var(--danger); }
 
     /* 进度条 */
@@ -468,7 +496,7 @@
     }
     .chat-input-row:focus-within {
       border-color: var(--accent);
-      box-shadow: 0 0 0 3px rgba(196, 75, 58, 0.1);
+      box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
     }
     .chat-input-row textarea {
       flex: 1; border: none; outline: none;
@@ -535,7 +563,7 @@
     }
     .auth-card input:focus {
       border-color: var(--accent);
-      box-shadow: 0 0 0 3px rgba(196, 75, 58, 0.1);
+      box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
     }
     .auth-card .btn-primary {
       width: 100%; padding: 11px;
@@ -582,7 +610,7 @@
       display: flex;
       align-items: center;
       gap: 8px;
-      background: linear-gradient(135deg, #7c3aed, #a78bfa);
+      background: linear-gradient(135deg, #2563EB, #60a5fa);
       border-bottom: 1px solid rgba(255,255,255,0.2);
     }
     .msg.assistant .thinking-block summary::-webkit-details-marker { display: none; }
@@ -599,7 +627,7 @@
     }
     .msg.assistant .thinking-block[open] summary .toggle-icon { transform: rotate(180deg); }
     .msg.assistant .thinking-block[open] summary {
-      background: linear-gradient(135deg, #6d28d9, #8b5cf6);
+      background: linear-gradient(135deg, #1D4ED8, #3B82F6);
     }
     /* 思考内容区：淡紫色背景 + 左侧强调线 */
     .msg.assistant .thinking-block .thinking-content {
@@ -631,7 +659,7 @@
     }
     /* 展开时：顶部加"展开状态"指示 */
     .msg.assistant .thinking-block[open] {
-      border-color: #8b5cf6;
+      border-color: #3B82F6;
     }
 
     /* ── 正式回答：醒目标题栏 ─────────────────────────────── */
@@ -684,7 +712,7 @@
       border-radius: 4px;
       transition: background 0.15s;
     }
-    #btn-new-folder:hover { background: rgba(196,75,58,0.08); }
+    #btn-new-folder:hover { background: rgba(37,99,235,0.08); }
     .folder-item {
       display: flex;
       align-items: center;
@@ -697,9 +725,9 @@
       transition: background 0.15s;
       user-select: none;
     }
-    .folder-item:hover { background: rgba(196,75,58,0.06); }
+    .folder-item:hover { background: rgba(37,99,235,0.06); }
     .folder-item.active {
-      background: rgba(196,75,58,0.12);
+      background: rgba(37,99,235,0.12);
       color: var(--accent);
       font-weight: 500;
     }
