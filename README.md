@@ -22,7 +22,7 @@
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│                        用户浏览器                            │
+│                        用户浏览器                             │
 │              http://124.156.204.163:8080                     │
 └──────────────────────────┬───────────────────────────────────┘
                            │ HTTP / SSE
@@ -85,14 +85,13 @@ phase0/
 │   └── config.py            # 环境变量配置
 ├── frontend/
 │   ├── index.html           # 主界面（论文列表 + 聊天）
-│   ├── demo.html            # 简化演示页
-│   └── (static assets)
+│   └── demo.html            # 简化演示页
 ├── tests/
 │   ├── api_tests.sh         # API 自动化测试
 │   └── e2e/rag_e2e.py      # Playwright E2E 测试
 ├── docs/                    # 架构文档
 ├── scripts/                 # 部署/运维脚本
-└── hooks/                   # pre-commit hooks
+└── hooks/                  # pre-commit hooks
 ```
 
 ---
@@ -197,11 +196,14 @@ python3 tests/e2e/rag_e2e.py
 ## 🔮 技术演进路线
 
 ```
-Phase 0.7 (当前) ───▶ Phase 1 ───▶ Phase 2 ───▶ Phase 3
-  Docling解析          多论文索引      PostgreSQL       域名+HTTPS
-  两级Chunk            元数据过滤      OSS对象存储      团队协作
-  PDF原文定位          置信度标注      多机部署
+Phase 0.8 (当前) ───▶ Phase 1 ───▶ Phase 2 ───▶ Phase 3
+  单体FastAPI            分层架构       PostgreSQL       域名+HTTPS
+  单用户/文件夹         多论文索引      OSS对象存储      团队协作
+  marked.js渲染         元数据过滤      多机部署
+                       置信度标注
 ```
+
+详细架构演进规划见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
 
 ---
 
