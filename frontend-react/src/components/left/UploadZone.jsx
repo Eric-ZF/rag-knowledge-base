@@ -2,32 +2,33 @@ import { useRef, useState } from 'react'
 import { uploadPaper } from '../../lib/api.js'
 import { useToast } from '../../contexts/ToastContext.jsx'
 
-export default function UploadZone() {
+export default function UploadZone({ folderId }) {
   const { addToast } = useToast()
   const inputRef = useRef()
   const [uploading, setUploading] = useState(false)
-  const [progress, setProgress] = useState(0)
   const [dragOver, setDragOver] = useState(false)
 
   const handleFiles = async (files) => {
-    const pdfs = Array.from(files).filter(f => f.name.endsWith('.pdf'))
+    const pdfs = Array.from(files).filter(f => f.name.toLowerCase().endsWith('.pdf'))
     if (pdfs.length === 0) return addToast('仅支持 PDF 文件', 'warning')
     setUploading(true)
-    setProgress(0)
 
     try {
       const formData = new FormData()
       pdfs.forEach(f => formData.append('files', f))
-      formData.append('folder_id', localStorage.getItem('currentFolderId') || '')
+      if (folderId) formData.append('folder_id', folderId)
 
       const result = await uploadPaper(formData)
-      addToast(`${pdfs.length} 篇论文已提交索引`, 'success')
-      // TODO: poll batch-status for progress
+      if (result.success) {
+        addToast(`${pdfs.length} 篇论文已提交索引`, 'success')
+        setTimeout(() => window.location.reload(), 1500)
+      } else {
+        addToast(result.detail || '上传失败', 'error')
+      }
     } catch (e) {
       addToast(e.message || '上传失败', 'error')
     } finally {
       setUploading(false)
-      setProgress(0)
     }
   }
 
@@ -49,16 +50,9 @@ export default function UploadZone() {
         onChange={e => handleFiles(e.target.files)}
       />
       <p className="text-sm text-[#4b5563] font-medium">
-        {uploading ? '上传中…' : '📄 点击选择 PDF 文件，或拖拽到此处'}
+        {uploading ? '上传中…' : '📄 点击选择 PDF，或拖拽到此处'}
       </p>
-      <p className="text-xs text-[#9ca3af] mt-1">仅支持 PDF · 单次最多 20 篇</p>
-      {uploading && (
-        <div className="mt-2">
-          <div className="h-1 bg-[#e5e7eb] rounded overflow-hidden">
-            <div className="h-full bg-accent transition-all" style={{ width: `${progress}%` }} />
-          </div>
-        </div>
-      )}
+      <p className="text-xs text-[#9ca3af] mt-1">仅 PDF · 单次最多 20 篇</p>
     </div>
   )
 }

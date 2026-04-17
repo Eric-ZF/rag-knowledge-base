@@ -4,7 +4,7 @@ import { useAuth } from '../../contexts/AuthContext.jsx'
 import { useToast } from '../../contexts/ToastContext.jsx'
 import { FolderOpen, Plus } from 'lucide-react'
 
-export default function FolderTree() {
+export default function FolderTree({ onSelectFolder }) {
   const { token } = useAuth()
   const { addToast } = useToast()
   const [folders, setFolders] = useState([])
@@ -18,9 +18,16 @@ export default function FolderTree() {
       setFolders(data.folders || [])
       if (data.folders?.length > 0 && !activeId) {
         setActiveId(data.folders[0].folder_id)
+        onSelectFolder?.(data.folders[0].folder_id)
       }
     }).catch(() => addToast('加载文件夹失败', 'error'))
   }, [token])
+
+  const handleSelect = (id) => {
+    setActiveId(id)
+    onSelectFolder?.(id)
+    localStorage.setItem('currentFolderId', id)
+  }
 
   const handleCreate = async () => {
     if (!newName.trim()) return
@@ -62,7 +69,7 @@ export default function FolderTree() {
             autoFocus
           />
           <div className="flex gap-2 mt-1.5">
-            <button onClick={() => setShowNew(false)} className="flex-1 text-xs text-[#6b7280] border border-[#e5e7eb] rounded py-1 hover:bg-[#f3f4f6] bg-transparent cursor-pointer">取消</button>
+            <button onClick={() => setShowNew(false)} className="flex-1 text-xs text-[#6b7280] border border-[#e5e7eb] rounded py-1 hover:bg-[#f3f4f6] bg-transparent cursor-pointer border-[1px]">取消</button>
             <button onClick={handleCreate} className="flex-1 text-xs text-white bg-accent rounded py-1 hover:bg-accent-hover cursor-pointer border-none">创建</button>
           </div>
         </div>
@@ -72,7 +79,7 @@ export default function FolderTree() {
         {folders.map(f => (
           <div
             key={f.folder_id}
-            onClick={() => setActiveId(f.folder_id)}
+            onClick={() => handleSelect(f.folder_id)}
             className={`flex items-center gap-1.5 px-4 py-1.5 text-sm cursor-pointer transition-colors relative
               ${activeId === f.folder_id
                 ? 'bg-blue-50 text-accent font-semibold border-l-2 border-accent'

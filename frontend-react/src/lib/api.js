@@ -32,13 +32,13 @@ export const register = (phone, password) =>
 export const setPassword = (phone, password) =>
   api('POST', '/auth/set-password', { phone, password })
 
-export const getFolders = () => api('GET', '/folders')
+export const getFolders = () => api('GET', '/papers/folders')
 
 export const createFolder = (name, parentId) =>
-  api('POST', '/folders', { name, parent_id: parentId })
+  api('POST', '/papers/folders', { name, parent_id: parentId })
 
 export const deleteFolder = (folderId) =>
-  api('DELETE', `/folders/${folderId}`)
+  api('DELETE', `/papers/folders/${folderId}`)
 
 export const getPapers = () => api('GET', '/papers')
 

@@ -1,3 +1,4 @@
+import { useState, useEffect } from 'react'
 import { useAuth } from '../contexts/AuthContext.jsx'
 import FolderTree from './left/FolderTree.jsx'
 import UploadZone from './left/UploadZone.jsx'
@@ -8,6 +9,7 @@ import ChatInput from './right/ChatInput.jsx'
 
 export default function MainLayout() {
   const { userPhone, logout } = useAuth()
+  const [currentFolderId, setCurrentFolderId] = useState(null)
 
   return (
     <div className="flex flex-col h-screen bg-white">
@@ -32,16 +34,16 @@ export default function MainLayout() {
       <div className="flex flex-1 overflow-hidden">
         {/* Left panel */}
         <div className="w-1/2 border-r border-[#e5e7eb] flex flex-col overflow-hidden">
-          <FolderTree />
-          <UploadZone />
-          <PaperList />
+          <FolderTree onSelectFolder={setCurrentFolderId} />
+          <UploadZone folderId={currentFolderId} />
+          <PaperList folderId={currentFolderId} />
         </div>
 
         {/* Right panel */}
         <div className="w-1/2 flex flex-col overflow-hidden">
           <QuotaBanner />
           <div className="flex-1 overflow-hidden flex flex-col">
-            <ChatPanel />
+            <ChatPanel folderIds={currentFolderId ? [currentFolderId] : []} />
             <ChatInput />
           </div>
         </div>

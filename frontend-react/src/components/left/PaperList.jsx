@@ -4,17 +4,25 @@ import { useAuth } from '../../contexts/AuthContext.jsx'
 import { useToast } from '../../contexts/ToastContext.jsx'
 import { Trash2 } from 'lucide-react'
 
-export default function PaperList() {
+export default function PaperList({ folderId }) {
   const { token } = useAuth()
   const { addToast } = useToast()
   const [papers, setPapers] = useState([])
+  const [loading, setLoading] = useState(false)
 
   useEffect(() => {
     if (!token) return
-    getPapers().then(data => {
-      setPapers(data.papers || [])
-    }).catch(() => addToast('加载论文失败', 'error'))
-  }, [token])
+    setLoading(true)
+    getPapers()
+      .then(data => {
+        const all = data.papers || []
+        // Filter by folderId if provided
+        const filtered = folderId ? all.filter(p => p.folder_id === folderId) : all
+        setPapers(filtered)
+      })
+      .catch(() => addToast('加载论文失败', 'error'))
+      .finally(() => setLoading(false))
+  }, [token, folderId])
 
   const handleDelete = async (paperId) => {
     if (!confirm('确认删除这篇论文？')) return
@@ -32,7 +40,7 @@ export default function PaperList() {
       <h3 className="text-[11px] font-bold text-[#9ca3af] uppercase tracking-wide mb-2 flex items-center gap-1">
         📄 论文列表
         <span className="ml-auto font-normal normal-case tracking-normal text-[10px] text-[#d1d5db]">
-          {papers.length} 篇
+          {loading ? '加载中…' : `${papers.length} 篇`}
         </span>
       </h3>
 
@@ -60,6 +68,9 @@ export default function PaperList() {
                    p.status === 'processing' ? '⏳ 处理中' :
                    p.status === 'pending' ? '⏳ 排队中' : '❌ 错误'}
                 </span>
+                {p.authors && (
+                  <span className="text-[10px] text-[#9ca3af] truncate max-w-[120px]">{p.authors}</span>
+                )}
               </div>
             </div>
             <button
@@ -73,7 +84,7 @@ export default function PaperList() {
         </div>
       ))}
 
-      {papers.length === 0 && (
+      {papers.length === 0 && !loading && (
         <p className="text-xs text-[#d1d5db] text-center py-8">暂无论文，上传 PDF 开始</p>
       )}
     </div>
