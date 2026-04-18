@@ -46,6 +46,50 @@ body {
   background: var(--c-bg);
   color: var(--c-text);
   -webkit-font-smoothing: antialiased;
+  transition: background 0.3s ease, color 0.3s ease;
+}
+
+/* ===== Dark Mode ===== */
+html.dark body,
+html.dark .dark-invert {
+  --c-bg: #0d0d14;
+  --c-surface: #16161f;
+  --c-border: rgba(255,255,255,0.07);
+  --c-text: #e2e4ed;
+  --c-muted: #8b8fa8;
+  --c-accent: #818cf8;
+  --c-accent-hover: #a5b4fc;
+  --c-accent-soft: rgba(129,140,248,0.1);
+  --glass-bg: rgba(22,22,31,0.85);
+  --glass-border: rgba(255,255,255,0.06);
+  --glass-shadow: 0 8px 32px rgba(0,0,0,0.4), 0 2px 8px rgba(0,0,0,0.3);
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.3);
+  --shadow-md: 0 4px 16px rgba(0,0,0,0.35);
+  --shadow-lg: 0 12px 40px rgba(0,0,0,0.4);
+  --shadow-glow: 0 0 20px rgba(129,140,248,0.3);
+}
+
+html.dark .bg-white,
+html.dark .bg-\[\#ffffff\],
+html.dark [style*="background: rgba(255,255,255"] {
+  background: var(--c-surface) !important;
+}
+
+html.dark .text-\[\#111827\],
+html.dark .text-\[\#1a1a2e\] {
+  color: var(--c-text) !important;
+}
+
+html.dark .text-\[\#374151\] {
+  color: var(--c-muted) !important;
+}
+
+html.dark .border-\[\#e5e7eb\] {
+  border-color: var(--c-border) !important;
+}
+
+html.dark .placeholder\:text-\[\#b0b8c8\]::placeholder {
+  color: var(--c-muted) !important;
 }
 
 /* ===== Animations ===== */
