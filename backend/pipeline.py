@@ -759,7 +759,45 @@ async def process_pdf(
     if not raw_docs:
         raise ValueError(f"PDF 解析失败，文档为空: {pdf_path}")
 
-    # 2. 两级分块
+    # 2. 过滤噪音：参考文献 / 元数据 / 页眉页脚 / DOI 行
+    import re
+    def _is_noise(doc: Document) -> bool:
+        text = doc.page_content
+        meta = doc.metadata or {}
+        stype = meta.get("section_type", "")
+
+        # 丢弃参考文献章节
+        if stype == "reference":
+            return True
+
+        # 丢弃过短的元数据行（DOI / 文章编号 / 收稿日期 / 作者简介等）
+        if len(text.strip()) < 20:
+            # DOI 行
+            if re.search(r'10\.\d{4,}/\S+', text):
+                return True
+            # 文献标志码 / 文章编号
+            if re.search(r'[文献标志码文章编号中图分类号]+', text):
+                return True
+            # 收稿日期 / 作者简介单行
+            if re.search(r'^[收稿日期作者简介]+', text):
+                return True
+            # 页码/期号行（纯数字+符号）
+            if re.match(r'^\s*\d+\s*[年期号页]+\s*\d*\s*$', text):
+                return True
+
+        # 丢弃全篇为期刊页眉页脚的块（大量含年份+期号+期刊名）
+        # 检查是否大量包含 "年第X期" 或 "Vol." 模式
+        if len(text) < 200:
+            density = len(re.findall(r'(?:\d{4}年|第\d+期|Vol\.|ISSN|LuJie)', text))
+            if density >= 2:
+                return True
+
+        return False
+
+    raw_docs = [d for d in raw_docs if not _is_noise(d)]
+    logger.info(f"[{paper_id}] 噪音过滤完成，剩余 {len(raw_docs)} 个原始单元")
+
+    # 3. 两级分块
     chunker = TwoLevelChunker()
     all_chunks = chunker.chunk(raw_docs)
     logger.info(f"[{paper_id}] 两级 Chunk 完成：{len(all_chunks)} 个 chunks（Recall + Evidence）")
