@@ -1243,6 +1243,112 @@ class BM25Index:
         ranked = sorted(enumerate(scores), key=lambda x: x[1], reverse=True)
         return ranked[:top_k]
 
+# ─── 查询意图感知加权 ────────────────────────────────────────────
+
+def _detect_query_intent(query: str) -> str:
+    """
+    根据用户 query 判断其学术检索意图，返回以下类型之一：
+    - method:   问研究方法/模型/数据/变量
+    - result:    问实证结果/回归系数/显著性
+    - conclusion:问研究结论/政策建议/启示
+    - background:问研究背景/文献综述/为什么研究
+    - abstract:  问文章摘要/核心观点/概述
+    - general:  无特定意图，泛查询
+    """
+    q = query.lower()
+
+    # method 意图
+    method_kw = ['方法', '模型', '变量', '样本', '数据来源', '实证', '怎么做的',
+                  '计量', '回归', 'CGE', 'GTAP', 'DID', 'OLS', '设计', '测算',
+                  '选取', '指标', '处理', '做法', 'approach', 'methodology']
+    if any(kw in q for kw in method_kw):
+        return 'method'
+
+    # result 意图
+    result_kw = ['结果', '发现', '回归', '系数', '显著', '影响', '实证结果',
+                  '估计', '效应', '弹性', '贡献', 'impact', 'effect', 'result',
+                  '是正的', '是负的', '显著为', '不显著', '通过了']
+    if any(kw in q for kw in result_kw):
+        return 'result'
+
+    # conclusion 意图
+    conclusion_kw = ['结论', '建议', '启示', '政策', '对策', '主要发现', '研究发现',
+                      '提出', '认为', 'conclusion', 'implication', 'policy',
+                      '贡献', '建议', '应该']
+    if any(kw in q for kw in conclusion_kw):
+        return 'conclusion'
+
+    # background 意图
+    background_kw = ['背景', '为什么', '研究现状', '文献', '综述', '已有研究',
+                      '现有研究', '前人', 'introduction', 'background', '现状']
+    if any(kw in q for kw in background_kw):
+        return 'background'
+
+    # abstract 意图
+    abstract_kw = ['摘要', '概述', '核心', '主要观点', '文章讲了什么', '概括',
+                    'abstract', 'summary', '主要内容', '文章内容']
+    if any(kw in q for kw in abstract_kw):
+        return 'abstract'
+
+    return 'general'
+
+
+# 意图 → 章节 boost 权重表（+boost 分数加到 combined_score）
+_QUERY_SECTION_BOOST = {
+    'method': {
+        'method':       0.20,   # 方法章节最强
+        'result':       0.05,
+        'introduction': 0.05,
+    },
+    'result': {
+        'result':       0.20,   # 结果章节最强
+        'method':       0.08,
+        'conclusion':   0.05,
+    },
+    'conclusion': {
+        'conclusion':   0.20,   # 结论章节最强
+        'discussion':   0.10,
+        'result':       0.05,
+    },
+    'background': {
+        'introduction': 0.20,   # 引言章节最强
+        'body':         0.05,
+    },
+    'abstract': {
+        'abstract':      0.30,   # 摘要章节最强
+        'title':        0.10,
+    },
+    'general': {
+        # 通用查询：轻微偏好 abstract 和 conclusion
+        'abstract':     0.10,
+        'conclusion':   0.05,
+    },
+}
+
+
+def _apply_intent_boost(chunks: list[dict], intent: str) -> list[dict]:
+    """
+    对检索结果进行意图感知章节加权。
+    在 RRF 融合分数基础上，根据查询意图对相关章节再加 boost。
+    """
+    boost_map = _QUERY_SECTION_BOOST.get(intent, {})
+    if not boost_map:
+        return chunks
+
+    for chunk in chunks:
+        section = chunk.get('section_type', 'body')
+        boost = boost_map.get(section, 0.0)
+        # abstract chunk 的原始文本全文作为附加 bonus
+        if section == 'abstract':
+            boost += 0.05 * min(len(chunk.get('content', '')) / 500, 1.0)
+        chunk['combined_score'] = round(chunk.get('combined_score', 0) + boost, 4)
+        chunk['intent'] = intent
+        chunk['section_boost'] = boost
+
+    # 重新排序
+    return sorted(chunks, key=lambda x: x.get('combined_score', 0), reverse=True)
+
+
 def hybrid_search(vectorstore, query: str, query_embedding_fn, k: int = 10) -> list[dict]:
     """
     真正混合检索：向量检索 ∪ BM25（全量） → RRF 融合 → 质量加权。
@@ -1374,23 +1480,23 @@ def hybrid_search(vectorstore, query: str, query_embedding_fn, k: int = 10) -> l
         # 加上归一化分数成分（权重 30%）
         combined = 0.7 * rrf + 0.3 * (0.5 * vs + 0.5 * bs)
 
-        # Section 质量加权
+        # 通用基础加权（独立于 query 意图，固定偏好）
         section = c["doc"].metadata.get('section_type', 'body')
-        if section in ('abstract', 'conclusion'):
-            combined += 0.15
-        elif section == 'method':
-            combined += 0.08
 
-        # Evidence chunk 优先
+        # Evidence chunk 优先（最小可引用单元）
         if c["doc"].metadata.get('is_evidence'):
             combined += 0.10
 
-        # 前3页加权
+        # 前3页加权（学术论文精华通常在前几页）
         page = c["doc"].metadata.get('page_number', 999)
         if page <= 3:
             combined += 0.10
         elif page >= 25:
             combined -= 0.08
+
+        # abstract 轻微基础偏好（很多查询都与摘要相关）
+        if section == 'abstract':
+            combined += 0.05
 
         c["combined_score"] = round(combined, 4)
         c["chunk_type"] = c["doc"].metadata.get('chunk_type', 'recall')
@@ -1431,7 +1537,6 @@ async def search_chunks(
                        只召回匹配 section_type 的 chunks
     """
     # ── Query 扩展：针对学术 RAG 的词项补充 ──────────────────────
-    # 当用户问及"方法/数据/模型"时，自动补充领域术语，提升召回率
     QUERY_EXPANSION = {
         "method": ["研究设计", "模型设定", "CGE", "GTAP", "计量模型", "回归分析", "数据来源", "样本", "变量"],
         "data": ["数据库", "数据来源", "样本", "统计年鉴", "年鉴数据", "调查数据"],
@@ -1445,6 +1550,10 @@ async def search_chunks(
             for term in terms:
                 if term.lower() not in query_lower:
                     expanded_query += f" {term}"
+
+    # ── 查询意图检测（用于章节感知加权）───────────────────────────
+    intent = _detect_query_intent(query)
+    logger.info(f"[search] query='{query[:40]}...' → intent={intent}")
 
     safe_collection_name = re.sub(r"[^a-zA-Z0-9_]", "_", collection_name)
     embedding_fn = get_chroma_embedding_fn()
@@ -1503,5 +1612,12 @@ async def search_chunks(
         })
         if len(chunks) >= top_k:
             break
+
+    # ── 意图感知章节加权 ───────────────────────────────────────────
+    chunks = _apply_intent_boost(chunks, intent)
+
+    # 记录检索日志（用于分析 query-intent 匹配效果）
+    top_sections = [c.get('section_type') for c in chunks[:5]]
+    logger.info(f"[search] intent={intent} → top5 sections={top_sections}")
 
     return chunks
