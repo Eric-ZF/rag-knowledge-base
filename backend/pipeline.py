@@ -31,6 +31,62 @@ from config import EMBEDDING_MODEL, EMBEDDING_DIM, CHROMADB_DIR, JINA_API_KEY
 
 # ─── Jina AI Embedding（云端 API，无本地模型）──────────
 JINA_API_URL = "https://api.jina.ai/v1/embeddings"
+JINA_RERANK_URL = "https://api.jina.ai/v1/rerank"
+
+
+def _jina_rerank(query: str, chunks: list[dict], top_n: int = 20) -> dict[str, float]:
+    """
+    调用 Jina Reranker API 对候选 chunks 做 cross-encoder 重排序。
+
+    Jina Reranker 是 cross-encoder，能理解 (query, document) 对的精确语义匹配。
+    对学术场景：专业术语（"DID"、"CGE"、"双重差分"）精确匹配效果远超向量检索。
+
+    Returns: {chunk_id: rerank_score}
+    """
+    if not chunks or not JINA_API_KEY:
+        return {}
+
+    # 最多 rerank 30 条（Jina API 按 token 计费）
+    rerank_chunks = chunks[:30]
+    documents = [c["content"][:2048] for c in rerank_chunks]  # 截断到 2048 字符防超限
+
+    try:
+        resp = requests.post(
+            JINA_RERANK_URL,
+            headers={
+                "Authorization": f"Bearer {JINA_API_KEY}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+            json={
+                "model": "jina-reranker-v2-base-multilingual",
+                "query": query,
+                "documents": documents,
+                "top_n": min(top_n, len(documents)),
+                "return_documents": False,
+            },
+            timeout=30,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        scores: dict[str, float] = {}
+        for item in data.get("results", []):
+            idx = item.get("index", -1)
+            score = item.get("relevance_score", 0.0)
+            if 0 <= idx < len(rerank_chunks):
+                chunk_id = rerank_chunks[idx].get("chunk_id", f"rerank-{idx}")
+                scores[chunk_id] = float(score)
+
+        logger.info(f"[rerank] Jina Reranker returned {len(scores)} scores")
+        return scores
+
+    except requests.exceptions.Timeout:
+        logger.warning("[rerank] Jina Reranker 超时（30s），跳过 rerank")
+        return {}
+    except Exception as e:
+        logger.warning(f"[rerank] Jina Reranker 调用失败: {e}，跳过 rerank")
+        return {}
 
 
 def _jina_embed_batch(texts: list[str]) -> list[list[float]]:
@@ -1466,19 +1522,38 @@ def hybrid_search(vectorstore, query: str, query_embedding_fn, k: int = 10) -> l
     for cid in ref_penalize:
         del candidates[cid]
 
-    # ── 4. RRF 融合（Reciprocal Rank Fusion, k=60）────
+    # ── 4. Jina Reranker cross-encoder 重排序 ───────────────
+    # 把 candidates 转成 list 用于 rerank
+    rerank_input = []
+    for cid, c in candidates.items():
+        rerank_input.append({
+            "chunk_id": cid,
+            "content": c["doc"].page_content,
+        })
+
+    rerank_scores = _jina_rerank(query, rerank_input, top_n=min(30, len(rerank_input)))
+
+    # 将 rerank 分数注入 candidates
+    for cid, c in candidates.items():
+        c["rerank_score"] = rerank_scores.get(cid, 0.0)
+
+    # ── 5. 三路融合（向量 + BM25 + Reranker）────────────────
     RRF_K = 60
     for cid, c in candidates.items():
         vr = c.get("vector_rank", 999)
         br = c.get("bm25_rank", 999)
         vs = c.get("vector_score", 0)
         bs = c.get("bm25_score", 0)
+        rs = c.get("rerank_score", 0.0)   # Jina Reranker 分数（0-1）
 
-        # RRF score
+        # RRF（向量 + BM25）
         rrf = (1 / (RRF_K + vr)) + (1 / (RRF_K + br))
 
-        # 加上归一化分数成分（权重 30%）
-        combined = 0.7 * rrf + 0.3 * (0.5 * vs + 0.5 * bs)
+        # 三路加权融合：
+        #   rerank_score 权重 40%（cross-encoder 最准确）
+        #   RRF 融合分 权重 40%
+        #   归一化向量/BM25分数 权重 20%
+        combined = 0.40 * rs + 0.40 * rrf + 0.20 * (0.5 * vs + 0.5 * bs)
 
         # 通用基础加权（独立于 query 意图，固定偏好）
         section = c["doc"].metadata.get('section_type', 'body')
