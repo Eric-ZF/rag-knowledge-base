@@ -1,5 +1,11 @@
 import { useState, useRef, useEffect } from 'react'
-import { SendHorizonal } from 'lucide-react'
+import { SendHorizonal, MessageSquare, FlaskConical, FileSearch } from 'lucide-react'
+
+const MODES = [
+  { key: 'default',    label: '默认问答',     icon: MessageSquare },
+  { key: 'methodology', label: '方法论审计', icon: FlaskConical },
+  { key: 'survey',     label: '文献综述',    icon: FileSearch },
+]
 
 export default function ChatInput() {
   const [text, setText] = useState('')
@@ -12,7 +18,7 @@ export default function ChatInput() {
 
   const handleSend = () => {
     if (!text.trim()) return
-    window.__reactSendMessage?.(text)
+    window.__reactSendMessage?.(text, mode)
     setText('')
   }
 
@@ -23,32 +29,51 @@ export default function ChatInput() {
     }
   }
 
-  const modes = [
-    { key: 'default', label: '💬 默认问答' },
-    { key: 'methodology', label: '🔬 方法论审计' },
-    { key: 'survey', label: '📝 文献综述' },
-  ]
-
   return (
-    <div className="px-5 py-3 border-t border-[#e5e7eb] bg-white">
+    <div style={{
+      padding: '12px 24px 16px',
+      background: 'rgba(255,255,255,0.85)',
+      backdropFilter: 'blur(16px)',
+      borderTop: '1px solid var(--c-border)',
+    }}>
       {/* Mode buttons */}
-      <div className="flex gap-1.5 mb-2 flex-wrap">
-        {modes.map(m => (
-          <button
-            key={m.key}
-            onClick={() => setMode(m.key)}
-            className={`text-xs px-3 py-1 rounded-full border font-medium transition-colors cursor-pointer
-              ${mode === m.key
-                ? 'bg-accent text-white border-accent'
-                : 'bg-white text-[#4b5563] border-[#e5e7eb] hover:border-accent/30 hover:text-accent'}`}
-          >
-            {m.label}
-          </button>
-        ))}
+      <div style={{ display: 'flex', gap: '8px', marginBottom: '10px', flexWrap: 'wrap' }}>
+        {MODES.map(m => {
+          const Icon = m.icon
+          const active = mode === m.key
+          return (
+            <button
+              key={m.key}
+              onClick={() => setMode(m.key)}
+              style={{
+                display: 'flex', alignItems: 'center', gap: '5px',
+                padding: '5px 12px', borderRadius: '999px', fontSize: '12px',
+                fontWeight: active ? '600' : '500',
+                cursor: 'pointer', transition: 'all 0.15s',
+                border: active ? '1.5px solid #6366f1' : '1.5px solid #e5e7eb',
+                background: active ? 'rgba(99,102,241,0.08)' : 'white',
+                color: active ? '#6366f1' : '#6b7280',
+                boxShadow: active ? '0 0 0 3px rgba(99,102,241,0.08)' : 'none',
+              }}
+            >
+              <Icon size={12} />
+              {m.label}
+            </button>
+          )
+        })}
       </div>
 
       {/* Input row */}
-      <div className="flex items-end gap-2 border border-[#e5e7eb] rounded-lg px-3.5 py-2 focus-within:border-accent transition-colors">
+      <div style={{
+        display: 'flex', alignItems: 'flex-end', gap: '10px',
+        background: 'white', borderRadius: '16px',
+        border: '1.5px solid #e5e7eb',
+        padding: '10px 14px',
+        transition: 'border-color 0.15s, box-shadow 0.15s',
+      }}
+        onFocus={() => {}}
+        onBlur={() => {}}
+      >
         <textarea
           ref={textareaRef}
           rows={1}
@@ -56,17 +81,29 @@ export default function ChatInput() {
           onChange={e => setText(e.target.value)}
           onKeyDown={handleKey}
           placeholder="问我关于你论文库的任何问题…"
-          className="flex-1 resize-none text-sm leading-relaxed text-[#374151] placeholder:text-[#9ca3af]
-                     focus:outline-none bg-transparent"
-          style={{ maxHeight: '120px' }}
+          style={{
+            flex: 1, resize: 'none', border: 'none', outline: 'none',
+            fontSize: '14px', lineHeight: '1.6', color: '#374151',
+            background: 'transparent', maxHeight: '120px',
+            fontFamily: 'inherit',
+          }}
         />
         <button
           onClick={handleSend}
           disabled={!text.trim()}
-          className="shrink-0 w-9 h-9 bg-accent text-white rounded-md flex items-center justify-center
-                     hover:bg-accent-hover transition-colors disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer border-none"
+          style={{
+            width: '36px', height: '36px', borderRadius: '10px',
+            background: text.trim()
+              ? 'linear-gradient(135deg, #667eea, #764ba2)'
+              : '#f3f4f6',
+            border: 'none', cursor: text.trim() ? 'pointer' : 'not-allowed',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            transition: 'all 0.15s',
+            boxShadow: text.trim() ? '0 4px 12px rgba(102,126,234,0.35)' : 'none',
+            flexShrink: 0,
+          }}
         >
-          <SendHorizonal size={16} />
+          <SendHorizonal size={15} color={text.trim() ? 'white' : '#9ca3af'} />
         </button>
       </div>
     </div>

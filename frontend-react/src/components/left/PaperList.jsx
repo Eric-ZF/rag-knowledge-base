@@ -2,7 +2,129 @@ import { useState, useEffect } from 'react'
 import { getPapers, deletePaper } from '../../lib/api.js'
 import { useAuth } from '../../contexts/AuthContext.jsx'
 import { useToast } from '../../contexts/ToastContext.jsx'
-import { Trash2 } from 'lucide-react'
+import { Trash2, FileText, BookOpen } from 'lucide-react'
+
+function StatusBadge({ status }) {
+  const map = {
+    ready:     { label: '已索引', bg: 'rgba(16,185,129,0.08)', color: '#10b981', border: 'rgba(16,185,129,0.2)' },
+    processing:{ label: '处理中', bg: 'rgba(245,158,11,0.08)', color: '#f59e0b', border: 'rgba(245,158,11,0.2)' },
+    pending:   { label: '排队中', bg: 'rgba(99,102,241,0.08)', color: '#6366f1', border: 'rgba(99,102,241,0.2)' },
+    error:     { label: '错误',   bg: 'rgba(239,68,68,0.08)',  color: '#ef4444', border: 'rgba(239,68,68,0.2)' },
+  }
+  const s = map[status] || map.error
+  return (
+    <span style={{
+      display: 'inline-flex', alignItems: 'center', gap: '4px',
+      fontSize: '10px', fontWeight: '600',
+      padding: '2px 7px', borderRadius: '999px',
+      background: s.bg, color: s.color, border: `1px solid ${s.border}`,
+    }}>
+      {status === 'ready' ? '✓' : status === 'error' ? '✗' : '○'} {s.label}
+    </span>
+  )
+}
+
+function PaperCard({ paper, onDelete }) {
+  return (
+    <div style={{
+      background: 'rgba(255,255,255,0.85)',
+      backdropFilter: 'blur(12px)',
+      border: '1px solid rgba(0,0,0,0.06)',
+      borderRadius: '14px',
+      padding: '14px',
+      marginBottom: '10px',
+      transition: 'all 0.2s cubic-bezier(0.4,0,0.2,1)',
+      cursor: 'default',
+      position: 'relative',
+      overflow: 'hidden',
+    }}
+      onMouseOver={e => {
+        e.currentTarget.style.transform = 'translateY(-2px)'
+        e.currentTarget.style.boxShadow = '0 8px 24px rgba(99,102,241,0.12)'
+        e.currentTarget.style.borderColor = 'rgba(99,102,241,0.2)'
+        const btn = e.currentTarget.querySelector('.delete-btn')
+        if (btn) btn.style.opacity = '1'
+      }}
+      onMouseOut={e => {
+        e.currentTarget.style.transform = 'translateY(0)'
+        e.currentTarget.style.boxShadow = 'none'
+        e.currentTarget.style.borderColor = 'rgba(0,0,0,0.06)'
+        const btn = e.currentTarget.querySelector('.delete-btn')
+        if (btn) btn.style.opacity = '0'
+      }}
+    >
+      {/* Accent bar */}
+      <div style={{
+        position: 'absolute', top: 0, left: 0, right: 0, height: '3px',
+        background: 'linear-gradient(90deg, #667eea, #764ba2)',
+        borderRadius: '14px 14px 0 0',
+        opacity: 0.7,
+      }} />
+
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: '10px' }}>
+        {/* Icon */}
+        <div style={{
+          width: '36px', height: '36px', borderRadius: '10px', flexShrink: 0,
+          background: 'linear-gradient(135deg, rgba(99,102,241,0.1), rgba(118,75,162,0.1))',
+          border: '1px solid rgba(99,102,241,0.12)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+        }}>
+          <FileText size={16} style={{ color: '#6366f1' }} />
+        </div>
+
+        <div style={{ flex: 1, minWidth: 0 }}>
+          {/* Title */}
+          <p style={{
+            fontSize: '13px', fontWeight: '600', color: '#1a1a2e',
+            lineHeight: '1.4', marginBottom: '6px',
+            overflow: 'hidden', display: '-webkit-box',
+            WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
+          }}>
+            {paper.title || '无标题'}
+          </p>
+
+          {/* Metadata */}
+          {(paper.authors || paper.journal || paper.year || paper.doi) && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginBottom: '8px' }}>
+              {paper.authors && (
+                <span style={{ fontSize: '10px', color: '#6b7280', maxWidth: '140px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {paper.authors}
+                </span>
+              )}
+              {paper.journal && (
+                <span style={{ display: 'flex', alignItems: 'center', gap: '2px', fontSize: '10px', color: '#6366f1' }}>
+                  <BookOpen size={9} /> {paper.journal}{paper.year ? ` · ${paper.year}` : ''}
+                </span>
+              )}
+            </div>
+          )}
+
+          {/* Status */}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <StatusBadge status={paper.status} />
+          </div>
+        </div>
+
+        {/* Delete */}
+        <button
+          className="delete-btn"
+          onClick={() => onDelete(paper.paper_id)}
+          title="删除论文"
+          style={{
+            opacity: 0, transition: 'opacity 0.15s',
+            background: 'none', border: 'none', cursor: 'pointer',
+            padding: '4px', borderRadius: '6px', color: '#9ca3af',
+            flexShrink: 0,
+          }}
+          onMouseOver={e => e.currentTarget.style.color = '#ef4444'}
+          onMouseOut={e => e.currentTarget.style.color = '#9ca3af'}
+        >
+          <Trash2 size={13} />
+        </button>
+      </div>
+    </div>
+  )
+}
 
 export default function PaperList({ folderId }) {
   const { token } = useAuth()
@@ -15,8 +137,7 @@ export default function PaperList({ folderId }) {
     setLoading(true)
     getPapers()
       .then(data => {
-        const all = data.papers || []
-        // Filter by folderId if provided
+        const all = Array.isArray(data) ? data : (data.papers || [])
         const filtered = folderId ? all.filter(p => p.folder_id === folderId) : all
         setPapers(filtered)
       })
@@ -25,7 +146,7 @@ export default function PaperList({ folderId }) {
   }, [token, folderId])
 
   const handleDelete = async (paperId) => {
-    if (!confirm('确认删除这篇论文？')) return
+    if (!window.confirm('确认删除这篇论文？')) return
     try {
       await deletePaper(paperId)
       setPapers(prev => prev.filter(p => p.paper_id !== paperId))
@@ -36,56 +157,53 @@ export default function PaperList({ folderId }) {
   }
 
   return (
-    <div className="flex-1 overflow-y-auto px-3.5 py-2">
-      <h3 className="text-[11px] font-bold text-[#9ca3af] uppercase tracking-wide mb-2 flex items-center gap-1">
-        📄 论文列表
-        <span className="ml-auto font-normal normal-case tracking-normal text-[10px] text-[#d1d5db]">
+    <div style={{ flex: 1, overflowY: 'auto', padding: '12px 14px' }}>
+      {/* Header */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+          <FileText size={12} style={{ color: '#6366f1' }} />
+          <span style={{
+            fontSize: '11px', fontWeight: '700', color: '#6b7280',
+            letterSpacing: '0.05em', textTransform: 'uppercase',
+          }}>
+            论文列表
+          </span>
+        </div>
+        <span style={{ fontSize: '11px', color: '#9ca3af' }}>
           {loading ? '加载中…' : `${papers.length} 篇`}
         </span>
-      </h3>
+      </div>
 
-      {papers.map(p => (
-        <div key={p.paper_id}
-          className="border border-[#e5e7eb] rounded-lg p-3 mb-1.5 hover:shadow-hover hover:border-accent/20 transition-all bg-white group"
-        >
-          <div className="flex items-start gap-2">
-            <div className="flex-1 min-w-0">
-              <p className="text-[13.5px] font-semibold text-[#111827] leading-snug line-clamp-2">
-                {p.title || '无标题'}
-              </p>
-              {(p.doi || p.journal || p.year) && (
-                <p className="text-[11px] text-[#6b7280] mt-1">
-                  {p.doi && <span className="text-accent">📄 {p.doi}</span>}
-                  {p.journal && <span className="ml-1">📰 {p.journal}{p.year ? ` (${p.year})` : ''}</span>}
-                </p>
-              )}
-              <div className="flex items-center gap-1.5 mt-1.5">
-                <span className={`inline-block text-[10px] px-1.5 py-0.5 rounded font-semibold
-                  ${p.status === 'ready' ? 'bg-emerald-50 text-emerald-700' : ''}
-                  ${p.status === 'processing' || p.status === 'pending' ? 'bg-amber-50 text-amber-700' : ''}
-                  ${p.status === 'error' ? 'bg-red-50 text-red-700' : ''}`}>
-                  {p.status === 'ready' ? '✅ 已索引' :
-                   p.status === 'processing' ? '⏳ 处理中' :
-                   p.status === 'pending' ? '⏳ 排队中' : '❌ 错误'}
-                </span>
-                {p.authors && (
-                  <span className="text-[10px] text-[#9ca3af] truncate max-w-[120px]">{p.authors}</span>
-                )}
-              </div>
-            </div>
-            <button
-              onClick={() => handleDelete(p.paper_id)}
-              className="opacity-0 group-hover:opacity-100 text-[#9ca3af] hover:text-red-500 transition-all bg-transparent border-none cursor-pointer shrink-0 p-1"
-              title="删除"
-            >
-              <Trash2 size={13} />
-            </button>
+      {/* Cards */}
+      <div>
+        {papers.map((p, i) => (
+          <div key={p.paper_id} style={{ animation: `fadeSlideUp 0.35s cubic-bezier(0.4,0,0.2,1) ${i * 50}ms both` }}>
+            <PaperCard paper={p} onDelete={handleDelete} />
           </div>
-        </div>
-      ))}
+        ))}
+      </div>
 
+      {/* Empty */}
       {papers.length === 0 && !loading && (
-        <p className="text-xs text-[#d1d5db] text-center py-8">暂无论文，上传 PDF 开始</p>
+        <div style={{ textAlign: 'center', padding: '40px 0', color: '#9ca3af' }}>
+          <div style={{ fontSize: '32px', marginBottom: '10px' }}>📄</div>
+          <p style={{ fontSize: '13px' }}>暂无论文</p>
+          <p style={{ fontSize: '12px', color: '#d1d5db', marginTop: '4px' }}>上传 PDF 开始使用</p>
+        </div>
+      )}
+
+      {/* Loading skeleton */}
+      {loading && papers.length === 0 && (
+        <div>
+          {[1,2,3].map(i => (
+            <div key={i} style={{
+              height: '88px', borderRadius: '14px', marginBottom: '10px',
+              background: 'linear-gradient(90deg, #f0f2f8 25%, #e8ecf3 50%, #f0f2f8 75%)',
+              backgroundSize: '200% 100%',
+              animation: `shimmer 1.5s infinite ${i * 100}ms`,
+            }} />
+          ))}
+        </div>
       )}
     </div>
   )

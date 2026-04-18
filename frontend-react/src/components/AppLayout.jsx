@@ -12,18 +12,48 @@ export default function MainLayout() {
   const [currentFolderId, setCurrentFolderId] = useState(null)
 
   return (
-    <div className="flex flex-col h-screen bg-white">
+    <div style={{
+      display: 'flex', flexDirection: 'column',
+      height: '100vh', overflow: 'hidden',
+      background: 'var(--c-bg)',
+    }}>
       {/* Header */}
-      <header className="h-[52px] border-b border-[#e5e7eb] flex items-center px-5 gap-3 shrink-0">
-        <h1 className="text-sm font-bold text-[#111827]">RAG 学术知识库</h1>
-        <span className="text-xs px-2 py-0.5 bg-blue-50 text-blue-600 border border-blue-200 rounded-full font-medium">
+      <header style={{
+        height: '56px', display: 'flex', alignItems: 'center',
+        padding: '0 20px', gap: '12px', shrink: 0,
+        background: 'rgba(255,255,255,0.8)',
+        backdropFilter: 'blur(16px) saturate(180%)',
+        WebkitBackdropFilter: 'blur(16px) saturate(180%)',
+        borderBottom: '1px solid var(--c-border)',
+        position: 'relative', zIndex: 10,
+      }}>
+        {/* Logo */}
+        <div style={{
+          width: '32px', height: '32px', borderRadius: '10px',
+          background: 'linear-gradient(135deg, #667eea, #764ba2)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          fontSize: '16px', boxShadow: '0 2px 8px rgba(102,126,234,0.3)',
+        }}>
+          📚
+        </div>
+        <h1 style={{ fontSize: '15px', fontWeight: '700', color: '#1a1a2e' }}>
+          RAG 学术知识库
+        </h1>
+        <span className="badge badge-accent" style={{ fontSize: '11px' }}>
           Phase 0
         </span>
-        <div className="ml-auto flex items-center gap-3">
-          <span className="text-xs text-[#6b7280]">{userPhone}</span>
+
+        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <span style={{ fontSize: '13px', color: '#6b7280' }}>{userPhone}</span>
           <button
             onClick={logout}
-            className="text-xs text-[#9ca3af] hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer"
+            style={{
+              fontSize: '12px', color: '#9ca3af', cursor: 'pointer',
+              background: 'none', border: 'none', padding: '4px 8px',
+              borderRadius: '8px', transition: 'all 0.15s',
+            }}
+            onMouseOver={e => e.target.style.color = '#ef4444'}
+            onMouseOut={e => e.target.style.color = '#9ca3af'}
           >
             退出
           </button>
@@ -31,18 +61,24 @@ export default function MainLayout() {
       </header>
 
       {/* Main grid */}
-      <div className="flex flex-1 overflow-hidden">
+      <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
         {/* Left panel */}
-        <div className="w-1/2 border-r border-[#e5e7eb] flex flex-col overflow-hidden">
+        <div style={{
+          width: '50%', display: 'flex', flexDirection: 'column',
+          overflow: 'hidden',
+          borderRight: '1px solid var(--c-border)',
+          background: 'rgba(255,255,255,0.6)',
+          backdropFilter: 'blur(8px)',
+        }}>
           <FolderTree onSelectFolder={setCurrentFolderId} />
           <UploadZone folderId={currentFolderId} />
           <PaperList folderId={currentFolderId} />
         </div>
 
         {/* Right panel */}
-        <div className="w-1/2 flex flex-col overflow-hidden">
+        <div style={{ width: '50%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
           <QuotaBanner />
-          <div className="flex-1 overflow-hidden flex flex-col">
+          <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
             <ChatPanel folderIds={currentFolderId ? [currentFolderId] : []} />
             <ChatInput />
           </div>

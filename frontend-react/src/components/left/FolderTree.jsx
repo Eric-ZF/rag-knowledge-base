@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { getFolders, createFolder } from '../../lib/api.js'
 import { useAuth } from '../../contexts/AuthContext.jsx'
 import { useToast } from '../../contexts/ToastContext.jsx'
-import { FolderOpen, Plus } from 'lucide-react'
+import { FolderOpen, Plus, Folder } from 'lucide-react'
 
 export default function FolderTree({ onSelectFolder }) {
   const { token } = useAuth()
@@ -15,10 +15,11 @@ export default function FolderTree({ onSelectFolder }) {
   useEffect(() => {
     if (!token) return
     getFolders().then(data => {
-      setFolders(data.folders || [])
-      if (data.folders?.length > 0 && !activeId) {
-        setActiveId(data.folders[0].folder_id)
-        onSelectFolder?.(data.folders[0].folder_id)
+      const arr = Array.isArray(data) ? data : (data.folders || [])
+      setFolders(arr)
+      if (arr.length > 0 && !activeId) {
+        setActiveId(arr[0].folder_id)
+        onSelectFolder?.(arr[0].folder_id)
       }
     }).catch(() => addToast('加载文件夹失败', 'error'))
   }, [token])
@@ -33,7 +34,8 @@ export default function FolderTree({ onSelectFolder }) {
     if (!newName.trim()) return
     try {
       const data = await createFolder(newName.trim(), null)
-      setFolders(prev => [...prev, data.folder])
+      const newFolder = Array.isArray(data) ? data : data.folder || data
+      setFolders(prev => [...prev, newFolder])
       setNewName('')
       setShowNew(false)
       addToast('文件夹已创建', 'success')
@@ -43,57 +45,99 @@ export default function FolderTree({ onSelectFolder }) {
   }
 
   return (
-    <div className="border-b border-[#e5e7eb]">
-      <div className="flex items-center justify-between px-4 py-2.5">
-        <span className="text-[11px] font-bold text-[#9ca3af] uppercase tracking-wide flex items-center gap-1">
-          <FolderOpen size={12} /> 项目
-        </span>
+    <div style={{
+      borderBottom: '1px solid var(--c-border)',
+    }}>
+      <div style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        padding: '10px 16px',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+          <FolderOpen size={13} style={{ color: '#6366f1' }} />
+          <span style={{
+            fontSize: '11px', fontWeight: '700', color: '#6b7280',
+            letterSpacing: '0.06em', textTransform: 'uppercase',
+          }}>
+            项目
+          </span>
+        </div>
         <button
           onClick={() => setShowNew(v => !v)}
-          className="text-[11px] text-accent font-semibold px-1.5 py-0.5 rounded hover:bg-blue-50 transition-colors bg-transparent border-none cursor-pointer"
+          style={{
+            display: 'flex', alignItems: 'center', gap: '4px',
+            fontSize: '11px', fontWeight: '600', color: '#6366f1',
+            background: 'rgba(99,102,241,0.06)', border: '1px solid rgba(99,102,241,0.15)',
+            borderRadius: '8px', padding: '3px 8px', cursor: 'pointer',
+            transition: 'all 0.15s',
+          }}
+          onMouseOver={e => { e.currentTarget.style.background = 'rgba(99,102,241,0.12)' }}
+          onMouseOut={e => { e.currentTarget.style.background = 'rgba(99,102,241,0.06)' }}
         >
-          <Plus size={12} className="inline" /> 新建
+          <Plus size={11} /> 新建
         </button>
       </div>
 
       {showNew && (
-        <div className="px-3 pb-2">
+        <div style={{ padding: '0 12px 12px' }}>
           <input
             type="text"
             placeholder="文件夹名称"
             value={newName}
             onChange={e => setNewName(e.target.value)}
             onKeyDown={e => e.key === 'Enter' && handleCreate()}
-            className="w-full border border-[#e5e7eb] rounded px-2.5 py-1.5 text-sm
-                       focus:outline-none focus:border-accent"
+            className="input-field"
             autoFocus
+            style={{ marginBottom: '8px', fontSize: '13px' }}
           />
-          <div className="flex gap-2 mt-1.5">
-            <button onClick={() => setShowNew(false)} className="flex-1 text-xs text-[#6b7280] border border-[#e5e7eb] rounded py-1 hover:bg-[#f3f4f6] bg-transparent cursor-pointer border-[1px]">取消</button>
-            <button onClick={handleCreate} className="flex-1 text-xs text-white bg-accent rounded py-1 hover:bg-accent-hover cursor-pointer border-none">创建</button>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <button onClick={() => setShowNew(false)} className="btn-ghost" style={{ flex: 1, fontSize: '12px', padding: '6px' }}>
+              取消
+            </button>
+            <button onClick={handleCreate} className="btn-primary" style={{ flex: 1, fontSize: '12px', padding: '6px' }}>
+              创建
+            </button>
           </div>
         </div>
       )}
 
-      <div>
-        {folders.map(f => (
+      <div style={{ paddingBottom: '4px' }}>
+        {folders.map((f, i) => (
           <div
             key={f.folder_id}
             onClick={() => handleSelect(f.folder_id)}
-            className={`flex items-center gap-1.5 px-4 py-1.5 text-sm cursor-pointer transition-colors relative
-              ${activeId === f.folder_id
-                ? 'bg-blue-50 text-accent font-semibold border-l-2 border-accent'
-                : 'text-[#4b5563] hover:bg-[#f3f4f6]'}`}
+            style={{
+              display: 'flex', alignItems: 'center', gap: '8px',
+              padding: '9px 16px', cursor: 'pointer',
+              transition: 'all 0.15s',
+              borderLeft: activeId === f.folder_id ? '3px solid #6366f1' : '3px solid transparent',
+              background: activeId === f.folder_id
+                ? 'rgba(99,102,241,0.06)'
+                : 'transparent',
+              color: activeId === f.folder_id ? '#6366f1' : '#4b5563',
+              fontWeight: activeId === f.folder_id ? '600' : '400',
+              animation: `fadeSlideUp 0.3s cubic-bezier(0.4,0,0.2,1) ${i * 40}ms both`,
+            }}
+            onMouseOver={e => { if (activeId !== f.folder_id) e.currentTarget.style.background = 'rgba(0,0,0,0.02)' }}
+            onMouseOut={e => { if (activeId !== f.folder_id) e.currentTarget.style.background = 'transparent' }}
           >
-            <span>📁</span>
-            <span className="text-xs">{f.name}</span>
-            {f.paper_count != null && (
-              <span className="text-[10px] text-[#9ca3af] ml-auto">{f.paper_count}</span>
+            <Folder size={14} style={{ color: activeId === f.folder_id ? '#6366f1' : '#9ca3af', flexShrink: 0 }} />
+            <span style={{ fontSize: '13px', flex: 1 }}>{f.name}</span>
+            {f.paper_count != null && f.paper_count > 0 && (
+              <span style={{
+                fontSize: '10px', fontWeight: '600',
+                background: activeId === f.folder_id ? 'rgba(99,102,241,0.15)' : '#f3f4f6',
+                color: activeId === f.folder_id ? '#6366f1' : '#9ca3af',
+                padding: '1px 6px', borderRadius: '999px',
+              }}>
+                {f.paper_count}
+              </span>
             )}
           </div>
         ))}
         {folders.length === 0 && (
-          <p className="text-xs text-[#9ca3af] px-4 py-2">暂无文件夹</p>
+          <p style={{ fontSize: '12px', color: '#9ca3af', padding: '16px', textAlign: 'center' }}>
+            暂无文件夹
+          </p>
         )}
       </div>
     </div>
