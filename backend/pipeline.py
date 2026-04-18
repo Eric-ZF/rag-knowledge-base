@@ -86,7 +86,7 @@ def get_chroma_embedding_fn():
 # ─── Docling PDF 解析 ──────────────────────────────────
 def _table_to_markdown(table_obj) -> str:
     """
-    将 Docling 2.84.0 的 Table 对象转换为 Markdown 格式。
+    将 Docling 2.84.0 的 Table 对象（低层 API）转换为 Markdown 格式。
     Table.table_cells 是扁平列表，按 row/col offset 索引排列。
     """
     try:
@@ -95,7 +95,6 @@ def _table_to_markdown(table_obj) -> str:
         if num_rows == 0 or num_cols == 0 or not table_obj.table_cells:
             return ""
 
-        # 构建 grid[row][col] = text
         grid = [["" for _ in range(num_cols)] for _ in range(num_rows)]
         for cell in table_obj.table_cells:
             row = cell.start_row_offset_idx
@@ -103,7 +102,40 @@ def _table_to_markdown(table_obj) -> str:
             if 0 <= row < num_rows and 0 <= col < num_cols:
                 grid[row][col] = (cell.text or "").strip()
 
-        # 生成 Markdown table
+        md_lines = []
+        md_lines.append("| " + " | ".join(f"col{j}" for j in range(num_cols)) + " |")
+        md_lines.append("|" + "|".join(["---"] * num_cols) + "|")
+        for row in grid:
+            md_lines.append("| " + " | ".join(str(c).strip() for c in row) + " |")
+
+        return "\n".join(md_lines)
+    except Exception:
+        return ""
+
+
+def _table_to_markdown_highlevel(t_item) -> str:
+    """
+    将 Docling TableItem（高层 API result.document.tables item）转换为 Markdown。
+    使用 TableItem.data.table_cells（RichTableCell 列表）。
+    """
+    try:
+        table_data = getattr(t_item, 'data', None)
+        if table_data is None:
+            return ""
+        num_rows = table_data.num_rows or 0
+        num_cols = table_data.num_cols or 0
+        cells = getattr(table_data, 'table_cells', []) or []
+        if num_rows == 0 or num_cols == 0 or not cells:
+            return ""
+
+        grid = [["" for _ in range(num_cols)] for _ in range(num_rows)]
+        for cell in cells:
+            row = getattr(cell, 'start_row_offset_idx', None)
+            col = getattr(cell, 'start_col_offset_idx', None)
+            text = getattr(cell, 'text', None) or ''
+            if row is not None and col is not None and 0 <= row < num_rows and 0 <= col < num_cols:
+                grid[row][col] = text.strip()
+
         md_lines = []
         md_lines.append("| " + " | ".join(f"col{j}" for j in range(num_cols)) + " |")
         md_lines.append("|" + "|".join(["---"] * num_cols) + "|")
@@ -224,6 +256,164 @@ def _is_garbled_text(text: str) -> bool:
     if valid / len(text) < 0.30:
         return True
     return False
+
+
+# ─── Docling 高层 API 语义解析 ──────────────────────────────────────
+
+def _build_heading_path(item, doc) -> str:
+    """
+    从 SectionHeaderItem.parent chain 构建完整 heading path。
+    例如: level2='1.2 研究背景', parent=level1='1. 引言'
+    返回: '1. 引言 > 1.2 研究背景'
+    """
+    try:
+        parts = []
+        current = item
+        visited = set()
+        while current is not None:
+            self_ref = getattr(current, 'self_ref', None)
+            if self_ref is None or self_ref in visited:
+                break
+            visited.add(self_ref)
+            text = getattr(current, 'text', None) or ''
+            level = getattr(current, 'level', 0) or 0
+            if text.strip() and level > 0:
+                parts.append(text.strip())
+            parent = getattr(current, 'parent', None)
+            if parent is None:
+                break
+            current = parent
+        parts.reverse()
+        return ' > '.join(parts)
+    except Exception:
+        return getattr(item, 'text', '') or ''
+
+
+def _extract_formula_latex(item) -> str:
+    """
+    从 FormulaItem 提取 LaTeX 字符串。
+    FormulaItem.orig 包含原始 LaTeX 源码。
+    """
+    try:
+        latex = getattr(item, 'orig', None) or getattr(item, 'text', None) or ''
+        latex = latex.strip()
+        if latex and not (latex.startswith('$') and latex.endswith('$')):
+            latex = f'${latex}$'
+        return latex
+    except Exception:
+        return ''
+
+
+def _extract_abstract(doc) -> str:
+    """从 DoclingDocument 提取摘要文本。"""
+    try:
+        from docling.datamodel.base_models import DocItemLabel
+        # 策略1: 找 ABSTRACT label
+        for item in getattr(doc, 'texts', []):
+            label = getattr(item, 'label', None)
+            if label == DocItemLabel.ABSTRACT:
+                text = getattr(item, 'text', None) or ''
+                if text.strip():
+                    return text.strip()
+        # 策略2: title 之后第一个 section_header 之前的文本
+        texts = list(getattr(doc, 'texts', []))
+        title_end_idx = None
+        first_section_idx = None
+        for i, item in enumerate(texts):
+            label = getattr(item, 'label', None)
+            if label == DocItemLabel.TITLE:
+                title_end_idx = i
+            elif label == DocItemLabel.SECTION_HEADER and first_section_idx is None:
+                first_section_idx = i
+        if title_end_idx is not None and first_section_idx is not None:
+            abstract_parts = []
+            for item in texts[title_end_idx + 1:first_section_idx]:
+                text = getattr(item, 'text', None) or ''
+                if text.strip() and len(text.strip()) > 20:
+                    abstract_parts.append(text.strip())
+            if abstract_parts:
+                return '\n'.join(abstract_parts)
+        return ''
+    except Exception:
+        return ''
+
+
+def _extract_keywords(abstract_text: str, top_n: int = 8) -> list[str]:
+    """从摘要文本提取关键词（简单频率统计）。"""
+    try:
+        # 中文 2-4 字 n-grams
+        cjk_ngrams = re.findall(r'[\u4e00-\u9fff]{2,4}', abstract_text)
+        # 英文单词
+        en_words = re.findall(r'[a-zA-Z]{3,}', abstract_text.lower())
+        stop_words = {
+            '的', '是', '在', '和', '了', '对', '为', '与', '等', '于', '上', '下', '中',
+            '这', '那', '有', '能', '可', '也', '被', '将', '其', '从', '到', '以', '及',
+            '通过', '进行', '研究', '分析', '本文', '表明', '发现', '提出', '基于',
+            'the', 'and', 'for', 'with', 'from', 'that', 'this', 'are', 'was', 'were'
+        }
+        freq = {}
+        for ng in cjk_ngrams:
+            if ng not in stop_words:
+                freq[ng] = freq.get(ng, 0) + 1
+        for w in en_words:
+            if w not in stop_words:
+                freq[w] = freq.get(w, 0) + 1
+        sorted_kw = sorted(freq.items(), key=lambda x: x[1], reverse=True)
+        return [kw for kw, _ in sorted_kw[:top_n]]
+    except Exception:
+        return []
+
+
+def _classify_by_docling_label(label) -> str:
+    """将 Docling DocItemLabel 映射为内部 section_type。"""
+    from docling.datamodel.base_models import DocItemLabel
+    label_map = {
+        DocItemLabel.TITLE:              'title',
+        DocItemLabel.SECTION_HEADER:     None,   # 需要看 level 决定
+        DocItemLabel.ABSTRACT:           'abstract',
+        DocItemLabel.PARAGRAPH:          'body',
+        DocItemLabel.TEXT:               'body',
+        DocItemLabel.FORMULA:            'formula',
+        DocItemLabel.TABLE:              'table',
+        DocItemLabel.PICTURE:            'figure',
+        DocItemLabel.LIST_ITEM:          'body',
+        DocItemLabel.PAGE_FOOTER:        'noise',
+        DocItemLabel.PAGE_HEADER:        'noise',
+        DocItemLabel.REFERENCE:          'reference',
+        DocItemLabel.CODE:               'body',
+        DocItemLabel.CAPTION:            'caption',
+        DocItemLabel.FOOTNOTE:           'noise',
+        DocItemLabel.MARKER:             'noise',
+    }
+    return label_map.get(label, 'body')
+
+
+def _heading_level_to_section_type(level: int, heading_text: str) -> str:
+    """根据 heading level 和文本内容判断章节类型。"""
+    text_lower = heading_text.lower()
+    if any(kw in text_lower for kw in ['结论', 'conclusion', '总结', '主要发现']):
+        return 'conclusion'
+    if any(kw in text_lower for kw in ['摘要', 'abstract', '概要']):
+        return 'abstract'
+    if any(kw in text_lower for kw in ['方法', 'method', '实验', '研究设计', '模型']):
+        return 'method'
+    if any(kw in text_lower for kw in ['结果', 'result', '实证', '回归', '分析']):
+        return 'result'
+    if any(kw in text_lower for kw in ['引言', 'introduction', '背景', '文献综述']):
+        return 'introduction'
+    if any(kw in text_lower for kw in ['讨论', 'discussion', '政策建议']):
+        return 'discussion'
+    if any(kw in text_lower for kw in ['参考文献', 'reference', 'bibliography']):
+        return 'reference'
+    if level == 1:
+        return 'introduction'
+    return 'body'
+
+
+def _section_header_to_markdown(level: int, text: str) -> str:
+    """将 heading 转换为 Markdown 格式 `# ## ###`"""
+    prefix = '#' * min(level, 6)
+    return f"{prefix} {text}"
 
 
 def _extract_section_title_from_text(text: str) -> str:
@@ -474,83 +664,190 @@ def _parse_pdf_rapidocr(pdf_path: str) -> tuple[list[Document], str, dict]:
 
 def parse_pdf_with_fallback(pdf_path: str) -> tuple[list[Document], str, dict]:
     """
-    解析 PDF，优先使用 Docling（表格/结构化最强）。
+    解析 PDF，优先使用 Docling 高层 API（result.document）。
     若解析质量过低（乱码比例 > 50%），自动降级到 pdfplumber。
     若 pdfplumber 输出存在字符间隔，进一步降级到 RapidOCR。
-    同时检测章节标题，存入 metadata['section_title']。
+
+    增强特性：
+    - SectionHeaderItem.level 真实层级 → heading_path 构建
+    - FormulaItem.orig LaTeX 源码 → $...$ 语义块
+    - 表格 prepend 所在章节标题
+    - DocItemLabel 精确 section_type 分类
     """
-    # ── 1. 先用 Docling ──────────────────────────────
+    # ── 1. Docling 高层 API ─────────────────────────
     from docling.document_converter import DocumentConverter
+    from docling.datamodel.base_models import DocItemLabel
+
     converter = DocumentConverter()
     result = converter.convert(source=pdf_path)
+    doc = result.document
 
-    all_parts = []
-    full_text_parts = []
-    table_count = 0
+    all_parts: list[dict] = []
+    full_text_parts: list[str] = []
+
+    # 当前文档级上下文（跨 page 维护）
+    current_section_type = "body"
     current_section_title = ""
+    current_heading_path = ""
+    current_heading_level = 0
+    table_count = 0
 
-    for page_num, page in enumerate(result.pages, start=1):
-        page_elements = []
-        assembled = getattr(page, "assembled", None)
-        if assembled is not None and hasattr(assembled, "elements"):
-            page_elements = assembled.elements or []
+    def _flush_paragraph(text: str, page_num: int) -> None:
+        """将段落文本加入 all_parts（过短段落跳过，避免噪音）"""
+        if not text or len(text.strip()) < 10:
+            return
+        section_type = _classify_section(text, page_num)
+        all_parts.append({
+            "text": text.strip(),
+            "page_number": page_num,
+            "section_type": section_type,
+            "source": "docling",
+            "section_title": current_section_title,
+            "heading_path": current_heading_path,
+            "heading_level": current_heading_level,
+            "is_formula": False,
+            "is_table": False,
+        })
+        full_text_parts.append(text.strip())
 
-        body_texts = []
-        for elem in page_elements:
-            if elem.__class__.__name__ == "TextElement":
-                text = getattr(elem, "text", None)
-                if text and text.strip():
-                    body_texts.append(text.strip())
-            elif elem.__class__.__name__ == "Table":
-                md = _table_to_markdown(elem)
-                if md:
-                    table_count += 1
-                    all_parts.append({
-                        "text": md,
-                        "page_number": page_num,
-                        "section_type": "table",
-                        "source": "docling",
-                        "section_title": current_section_title,
-                        "table_index": table_count,
-                    })
-                    full_text_parts.append(md)
+    # ── 遍历 result.document.texts（高层有序 API）───────
+    # items: TitleItem, SectionHeaderItem, FormulaItem, TextItem, ListItem...
+    texts = getattr(doc, 'texts', [])
+    logger.info(f"[parse] Docling 高层 API: {len(texts)} items, {len(getattr(doc, 'tables', []))} tables")
 
-        page_combined = "\n\n".join(body_texts)
-        if page_combined.strip():
-            paragraphs = [p.strip() for p in page_combined.split("\n\n") if p.strip()]
-            for para in paragraphs:
-                section_type = _classify_section(para, page_num)
-                section_title = _extract_section_title_from_text(para)
-                if section_title:
-                    current_section_title = section_title
+    for item in texts:
+        label = getattr(item, 'label', None)
+        page_no = getattr(item, 'page_no', 1) or 1
+
+        # ── SectionHeader ────────────────────────────
+        if label == DocItemLabel.SECTION_HEADER:
+            level = getattr(item, 'level', 1) or 1
+            heading_text = getattr(item, 'text', '') or ''
+            heading_path = _build_heading_path(item, doc)
+
+            current_heading_level = level
+            current_heading_path = heading_path
+            current_section_title = heading_text
+            current_section_type = _heading_level_to_section_type(level, heading_text)
+
+            # heading 本身作为 Markdown 内容保留
+            md_heading = _section_header_to_markdown(level, heading_text)
+            all_parts.append({
+                "text": md_heading,
+                "page_number": page_no,
+                "section_type": current_section_type,
+                "source": "docling",
+                "section_title": heading_text,
+                "heading_path": heading_path,
+                "heading_level": level,
+                "is_formula": False,
+                "is_table": False,
+            })
+            full_text_parts.append(md_heading)
+            continue
+
+        # ── Formula ──────────────────────────────────
+        if label == DocItemLabel.FORMULA:
+            latex = _extract_formula_latex(item)
+            formula_text = getattr(item, 'text', '') or latex
+            if formula_text.strip():
                 all_parts.append({
-                    "text": para,
-                    "page_number": page_num,
-                    "section_type": section_type,
+                    "text": formula_text.strip(),
+                    "page_number": page_no,
+                    "section_type": "formula",
                     "source": "docling",
                     "section_title": current_section_title,
+                    "heading_path": current_heading_path,
+                    "heading_level": current_heading_level,
+                    "is_formula": True,
+                    "formula_latex": latex,
+                    "is_table": False,
                 })
-                full_text_parts.append(para)
+                full_text_parts.append(formula_text.strip())
+            continue
 
-    # ── 2. 质量检测 ─────────────────────────────────
+        # ── Page-level noise ─────────────────────────
+        if label in (DocItemLabel.PAGE_FOOTER, DocItemLabel.PAGE_HEADER,
+                     DocItemLabel.FOOTNOTE, DocItemLabel.MARKER):
+            continue
+
+        # ── Text / Paragraph ──────────────────────────
+        raw_text = getattr(item, 'text', None) or ''
+        orig_text = getattr(item, 'orig', None) or raw_text
+        text = (orig_text or raw_text or '').strip()
+        if not text or len(text) < 5:
+            continue
+
+        # 噪声过滤：DOI 行、文献标志码（短行）
+        if len(text) < 100 and re.search(r'^\s*(DOI|文献标志码|中图分类号|[A-Z]{2,4}\s*\d{2,})', text):
+            continue
+
+        section_type = _classify_by_docling_label(label) or _classify_section(text, page_no)
+        if section_type == 'noise':
+            continue
+
+        # 合并相邻同类段落（减少 chunk 碎片）
+        if (all_parts and all_parts[-1]["section_type"] == section_type
+                and all_parts[-1]["section_title"] == current_section_title
+                and len(all_parts[-1]["text"]) + len(text) < 800):
+            all_parts[-1]["text"] += "\n\n" + text
+            full_text_parts[-1] += "\n\n" + text
+        else:
+            _flush_paragraph(text, page_no)
+
+    # ── 2. 表格：append 到 all_parts，prepend 章节标题 ───────────
+    for t_item in getattr(doc, 'tables', []):
+        table_count += 1
+        md_table = _table_to_markdown_highlevel(t_item)
+        if not md_table.strip():
+            continue
+
+        # prepend 章节标题（caption 优先）
+        captions = getattr(t_item, 'captions', []) or []
+        caption_texts = [getattr(c, 'text', '') or '' for c in captions]
+        caption = caption_texts[0] if caption_texts else ''
+        section_label = caption or current_section_title
+        if section_label:
+            md_table = f"**{section_label}**\n\n{md_table}"
+
+        # 表格页码从 prov 获取
+        table_prov = getattr(t_item, 'prov', []) or []
+        page_no = 1
+        if table_prov:
+            prov = table_prov[0]
+            page_no = getattr(prov, 'page_no', 1) or 1
+
+        all_parts.append({
+            "text": md_table,
+            "page_number": page_no,
+            "section_type": "table",
+            "source": "docling",
+            "section_title": section_label,
+            "heading_path": current_heading_path,
+            "heading_level": current_heading_level,
+            "is_formula": False,
+            "is_table": True,
+            "table_index": table_count,
+        })
+        full_text_parts.append(md_table)
+
+    # ── 3. 质量检测 ─────────────────────────────────
     readable_count = sum(1 for t in full_text_parts if not _is_garbled_text(t))
     quality_ratio = readable_count / max(len(full_text_parts), 1)
-    logger.info(f"[parse] Docling 质量：{readable_count}/{len(full_text_parts)} 段可读（阈值 50%）")
+    logger.info(f"[parse] Docling 高层 API 质量：{readable_count}/{len(full_text_parts)} 段可读（阈值 50%）")
 
     if quality_ratio < 0.50:
         logger.warning(f"[parse] Docling 质量低于 50%（{quality_ratio:.1%}），降级到 pdfplumber")
         plumber_docs, plumber_hash, plumber_meta = parse_pdf_plumber(pdf_path)
-        # 检查 pdfplumber 输出是否有字符间隔（扫描 PDF 特征）
         plumber_texts = [d.page_content for d in plumber_docs]
         spaced_pages = sum(1 for t in plumber_texts if _is_spaced_text(t))
         logger.info(f"[parse] pdfplumber 字符间隔检测：{spaced_pages}/{len(plumber_texts)} 段存在间隔")
         if spaced_pages > len(plumber_texts) * 0.3:
-            # 超过 30% 段落有间隔，切换到 RapidOCR
             logger.warning(f"[parse] pdfplumber {spaced_pages}/{len(plumber_texts)} 段字符间隔 > 30%，降级到 RapidOCR")
             return _parse_pdf_rapidocr(pdf_path)
         return plumber_docs, plumber_hash, plumber_meta
 
-    # ── 3. 生成 Documents ───────────────────────────────
+    # ── 4. 生成 Documents ───────────────────────────────
     documents = []
     for i, part in enumerate(all_parts):
         documents.append(Document(
@@ -560,20 +857,35 @@ def parse_pdf_with_fallback(pdf_path: str) -> tuple[list[Document], str, dict]:
                 "section_type": part["section_type"],
                 "source": part["source"],
                 "section_title": part.get("section_title", ""),
+                "heading_path": part.get("heading_path", ""),
+                "heading_level": part.get("heading_level", 0),
                 "chunk_index": i,
+                "is_formula": part.get("is_formula", False),
+                "formula_latex": part.get("formula_latex", ""),
+                "is_table": part.get("is_table", False),
                 **{k: v for k, v in part.items()
-                   if k not in ("text", "page_number", "section_type", "source", "section_title")},
+                   if k not in ("text", "page_number", "section_type", "source",
+                                "section_title", "heading_path", "heading_level",
+                                "is_formula", "formula_latex", "is_table")},
             }
         ))
 
     content_hash = hashlib.sha256(
         ("|||".join(full_text_parts)).encode("utf-8")
     ).hexdigest()
+
+    # 提取增强元数据
+    abstract = _extract_abstract(doc)
+    keywords = _extract_keywords(abstract) if abstract else []
     pdf_meta = _extract_pdf_metadata(result)
+    pdf_meta["abstract"] = abstract
+    pdf_meta["keywords"] = keywords
+
+    logger.info(f"[parse] 增强解析完成：{len(documents)} chunks, abstract={len(abstract)}字, keywords={keywords}")
     return documents, content_hash, pdf_meta
 
 
-def _classify_section(text: str, page_num: int) -> str:
+
     """
     根据文本首行 + 页码判断段落类型（用于 chunk 权重和检索优先级）。
     
@@ -828,17 +1140,26 @@ async def process_pdf(
             "title": display_title,
             "authors": pdf_meta.get('authors', ''),
             "year": pdf_meta.get('year'),
+            "abstract": pdf_meta.get('abstract', ''),
+            "keywords": pdf_meta.get('keywords', []),
             "journal": pdf_meta.get('journal', ''),
             "doi": pdf_meta.get('doi', ''),
             "chunk_type": c.metadata.get("chunk_type", "recall"),
             "section_type": c.metadata.get("section_type", "body"),
-            "source": c.metadata.get("source", "body"),
+            "section_title": c.metadata.get("section_title", ""),
+            "heading_path": c.metadata.get("heading_path", ""),
+            "heading_level": c.metadata.get("heading_level", 0),
+            "source": c.metadata.get("source", "docling"),
             "page_number": c.metadata.get("page_number", 0),
             "chunk_index": i,
             "text": c.page_content[:200],  # 前200字预览
             # 证据块额外字段
             "is_evidence": c.metadata.get("chunk_type") == "evidence",
             "is_recall": c.metadata.get("chunk_type") == "recall",
+            # 公式/表格标记
+            "is_formula": c.metadata.get("is_formula", False),
+            "formula_latex": c.metadata.get("formula_latex", ""),
+            "is_table": c.metadata.get("is_table", False),
         }
         for i, c in enumerate(all_chunks)
     ]
