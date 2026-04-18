@@ -9,7 +9,7 @@ RAG Backend E2E 测试 — pytest 配置
 import pytest, requests
 
 BASE_URL = "http://localhost:8000"
-TEST_EMAIL = "bosstest@boss.io"
+TEST_PHONE = "13800138000"
 TEST_PASSWORD = "BossPhase0"
 
 
@@ -23,7 +23,7 @@ def auth_token(base_url) -> str:
     """获取有效 token（session 级，所有测试复用）"""
     resp = requests.post(
         f"{base_url}/auth/login",
-        json={"email": TEST_EMAIL, "password": TEST_PASSWORD},
+        json={"phone": TEST_PHONE, "password": TEST_PASSWORD},
         timeout=10,
     )
     assert resp.status_code == 200, f"登录失败: {resp.status_code} {resp.text}"

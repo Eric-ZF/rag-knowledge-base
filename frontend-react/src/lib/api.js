@@ -1,4 +1,5 @@
-const API_BASE = 'http://124.156.204.163:8080'
+// Auto-detect: use current origin (works for both /auth, /papers, /chat via nginx)
+const API_BASE = ''
 
 let _token = localStorage.getItem('token') || ''
 

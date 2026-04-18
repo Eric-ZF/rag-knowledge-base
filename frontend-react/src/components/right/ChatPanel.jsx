@@ -220,7 +220,7 @@ export default function ChatPanel({ folderIds = [] }) {
 
     try {
       const token = localStorage.getItem('token')
-      const res = await fetch('http://124.156.204.163:8080/chat/stream', {
+      const res = await fetch('/chat/stream', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
