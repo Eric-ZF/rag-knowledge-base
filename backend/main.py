@@ -81,6 +81,12 @@ async def lifespan(_app: FastAPI):
                 logger.warning(f"[phantom] {paper_id[:8]} 检测失败: {e}")
     logger.info(f"phantom 检测完成：{phantom_count} 篇标记为 error，{migrated} 个用户文件夹已迁移")
 
+    # ── 超时 stale processing 清理 ──────────────────────
+    from papers_db import cleanup_stale_processing
+    stale = cleanup_stale_processing(max_age_minutes=30)
+    if stale:
+        logger.info(f"[cleanup] {len(stale)} 篇 stale processing 已清理: {[p[:8] for p in stale]}")
+
     # ── 孤立 PDF 清理 ──────────────────────────────
     logger.info("启动孤立 PDF 清理...")
     orphan_deleted = 0

@@ -103,3 +103,30 @@ def clear() -> None:
     with _lock:
         _papers_db.clear()
         save()
+
+
+def cleanup_stale_processing(max_age_minutes: int = 30) -> list[str]:
+    """
+    清理卡在 processing 状态超过 max_age_minutes 的论文（超时处理）。
+    返回被清理的 paper_id 列表。
+    """
+    from datetime import datetime as dt
+    cutoff = dt.utcnow().timestamp() - max_age_minutes * 60
+    cleaned = []
+    with _lock:
+        for pid, p in _papers_db.items():
+            if p.get("status") == "processing":
+                created_at = p.get("created_at", "")
+                if not created_at:
+                    continue
+                try:
+                    created_ts = dt.fromisoformat(created_at.replace("Z", "+00:00")).timestamp()
+                except Exception:
+                    continue
+                if created_ts < cutoff:
+                    p["status"] = "error"
+                    p["error"] = f"索引超时（超过 {max_age_minutes} 分钟未完成，已自动清理）"
+                    cleaned.append(pid)
+        if cleaned:
+            save()
+    return cleaned
