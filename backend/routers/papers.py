@@ -34,7 +34,7 @@ def _col(user_id: str) -> str:
     return f"user_{user_id.replace('-', '_')}"
 
 # ─── 后台任务：处理 PDF ─────────────────────────────
-def _process_pdf_background(paper_id: str, pdf_path: str, collection: str, title: str):
+async def _process_pdf_background(paper_id: str, pdf_path: str, collection: str, title: str):
     def emit(stage: str, progress: float, **kwargs):
         stage_labels = {
             "parsing_pages": "🔍 正在识别页面结构...",
@@ -54,6 +54,15 @@ def _process_pdf_background(paper_id: str, pdf_path: str, collection: str, title
         with _pe_lock:
             processing_events[paper_id] = event
 
+    def _run_sync():
+        return asyncio.run(process_pdf(
+            pdf_path=pdf_path,
+            paper_id=paper_id,
+            collection_name=collection,
+            title=title,
+            progress_callback=emit,
+        ))
+
     try:
         emit("parsing_pages", 0.05)
         emit("parsing_text", 0.1)
@@ -61,13 +70,9 @@ def _process_pdf_background(paper_id: str, pdf_path: str, collection: str, title
         emit("parsing_done", 0.25)
         emit("chunking", 0.3)
 
-        result = asyncio.run(process_pdf(
-            pdf_path=pdf_path,
-            paper_id=paper_id,
-            collection_name=collection,
-            title=title,
-            progress_callback=emit,
-        ))
+        # asyncio.to_thread 将 CPU 密集的 PDF 处理卸到线程池，
+        # 释放 FastAPI 事件循环，不再阻塞同一 worker 上的其他请求
+        result = await asyncio.to_thread(_run_sync)
         emit("chunking_done", 0.6)
         emit("embedding", 0.7)
         emit("embedding_done", 0.8)

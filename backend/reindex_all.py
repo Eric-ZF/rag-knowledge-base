@@ -56,7 +56,7 @@ def process_background(paper_id, pdf_path, collection, title):
             paper_id=paper_id,
             collection_name=collection,
             title=title,
-            progress_callback=lambda s, p: emit(paper_id, s, p),
+            progress_callback=lambda s, p, **kw: emit(paper_id, s, p),
         ))
         emit(paper_id, "chunking_done", 0.6)
         emit(paper_id, "embedding", 0.7)
@@ -102,15 +102,12 @@ def main():
         print(f"   PDF: {pdf_path}")
         print(f"   Collection: {collection}")
 
-        # Run in background
-        t = threading.Thread(target=process_background, args=(pid, pdf_path, collection, title))
-        t.start()
-        time.sleep(2)  # Rate limit
+        # Run sequentially (OOM-safe: one paper at a time)
+        process_background(pid, pdf_path, collection, title)
+        print(f"   Sleep 3s before next...")
+        time.sleep(3)  # Rate limit between papers
 
-    print("\n⏳ All indexing tasks started. Waiting...")
-    # Keep main thread alive
-    while threading.active_count() > 1:
-        time.sleep(5)
+    print(f"\n🎉 All {len(ready)} papers processed.")
 
 
 if __name__ == "__main__":

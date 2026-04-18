@@ -264,7 +264,6 @@ def _is_spaced_text(text: str) -> bool:
     2. 字符压缩: "对对中中国国高高碳碳..." - 连续CJK字符无间隔
     RapidOCR 对两者都有很好的修复效果。
     """
-    import re
     if not text:
         return False
     total_cjk = sum(1 for c in text if '\u4e00' <= c <= '\u9fff')
@@ -364,13 +363,7 @@ def _extract_abstract(doc) -> str:
     """从 DoclingDocument 提取摘要文本。"""
     try:
         from docling.datamodel.base_models import DocItemLabel
-        # 策略1: 找 ABSTRACT label
-        for item in getattr(doc, 'texts', []):
-            label = getattr(item, 'label', None)
-            if label == DocItemLabel.ABSTRACT:
-                text = getattr(item, 'text', None) or ''
-                if text.strip():
-                    return text.strip()
+        # 策略1 (已移除): Docling 2.x 无 ABSTRACT label，依赖策略2
         # 策略2: title 之后第一个 section_header 之前的文本
         texts = list(getattr(doc, 'texts', []))
         title_end_idx = None
@@ -426,7 +419,7 @@ def _classify_by_docling_label(label) -> str:
     label_map = {
         DocItemLabel.TITLE:              'title',
         DocItemLabel.SECTION_HEADER:     None,   # 需要看 level 决定
-        DocItemLabel.ABSTRACT:           'abstract',
+        # ABSTRACT label 不存在于 Docling 2.x，摘要由 _classify_section 通过文本检测
         DocItemLabel.PARAGRAPH:          'body',
         DocItemLabel.TEXT:               'body',
         DocItemLabel.FORMULA:            'formula',
@@ -435,13 +428,65 @@ def _classify_by_docling_label(label) -> str:
         DocItemLabel.LIST_ITEM:          'body',
         DocItemLabel.PAGE_FOOTER:        'noise',
         DocItemLabel.PAGE_HEADER:        'noise',
-        DocItemLabel.REFERENCE:          'reference',
+        # REFERENCE label 不存在于 Docling 2.x，参考章节由 _classify_section 通过文本检测
         DocItemLabel.CODE:               'body',
         DocItemLabel.CAPTION:            'caption',
         DocItemLabel.FOOTNOTE:           'noise',
         DocItemLabel.MARKER:             'noise',
     }
     return label_map.get(label, 'body')
+
+
+def _classify_section(text: str, page_num: int) -> str:
+    """
+    根据文本首行 + 页码判断段落类型（用于 chunk 权重和检索优先级）。
+    """
+    first_line = text.strip().split('\n')[0]
+    first_lower = first_line.lower()
+
+    # ── 摘要 ──────────────────────────────────────────
+    if page_num == 1 and any(kw in first_lower for kw in ['摘要', 'abstract', '概要', '提要']):
+        return "abstract"
+
+    # ── 结论（最具体，优先判断）─────────────────────
+    if any(kw in first_lower for kw in ['结论', 'conclusion', '总结', '主要发现', '研究发现', '政策启示', '研究结论']):
+        return "conclusion"
+
+    # ── 方法 ──────────────────────────────────────────
+    if any(kw in first_lower for kw in ['研究设计', '数据来源', '实证方法', '模型设定', '模型构建', '变量选择', '研究框架', 'method', '实验', '样本选择', '数据说明']):
+        return "method"
+
+    # ── 结果 ──────────────────────────────────────────
+    if any(kw in first_lower for kw in ['实证结果', '回归结果', '估计结果', '分析结果', '研究结果', '稳健性', '内生性', '异质性分析', '影响效应']):
+        return "result"
+
+    # ── 引言/背景 ───────────────────────────────────
+    if any(kw in first_lower for kw in ['引言', '前言', '背景', '研究现状', '文献综述', '理论框架', '问题的提出', '研究动机', 'introduction']):
+        return "introduction"
+
+    # ── 讨论 ───────────────────────────────────────
+    if any(kw in first_lower for kw in ['讨论', 'discussion', '政策建议', '启示与建议']):
+        return "discussion"
+
+    # ── 中文数字 section 标记 ─────────────────────────
+    cn_match = re.match(r'^[一二三四五六七八九十]+[、、]', first_line)
+    if cn_match:
+        marker = cn_match.group()[:2]
+        section_map = {
+            '一、': 'introduction', '二、': 'introduction', '三、': 'method',
+            '四、': 'result', '五、': 'discussion', '六、': 'conclusion',
+            '七、': 'conclusion', '八、': 'conclusion',
+        }
+        return section_map.get(marker, 'body')
+
+    # ── 阿拉伯数字 section 标记 ──────────────────────
+    arabic_match = re.match(r'^[0-9]+[.、\s]', first_line)
+    if arabic_match:
+        num = int(re.match(r'^[0-9]+', first_line).group())
+        section_map = {1: 'introduction', 2: 'method', 3: 'result', 4: 'discussion', 5: 'conclusion'}
+        return section_map.get(num, 'body')
+
+    return 'body'
 
 
 def _heading_level_to_section_type(level: int, heading_text: str) -> str:
@@ -951,7 +996,6 @@ def parse_pdf_with_fallback(pdf_path: str) -> tuple[list[Document], str, dict]:
     - 中文 numeral section 标记必须出现在行首（或整行就是一个数字+标题）
     - 政策报告格式 "准见·策言3" 视为 result（因为是策言/建议类）
     """
-    import re
     first_line = text.strip().split('\n')[0]
     first_lower = first_line.lower()
 
@@ -1128,7 +1172,6 @@ async def process_pdf(
         raise ValueError(f"PDF 解析失败，文档为空: {pdf_path}")
 
     # 2. 过滤噪音：参考文献 / 元数据 / 页眉页脚 / DOI 行
-    import re
     def _is_noise(doc: Document) -> bool:
         text = doc.page_content
         meta = doc.metadata or {}
@@ -1197,7 +1240,7 @@ async def process_pdf(
             "authors": pdf_meta.get('authors', ''),
             "year": pdf_meta.get('year'),
             "abstract": pdf_meta.get('abstract', ''),
-            "keywords": pdf_meta.get('keywords', []),
+            "keywords": pdf_meta.get('keywords') or None,
             "journal": pdf_meta.get('journal', ''),
             "doi": pdf_meta.get('doi', ''),
             "chunk_type": c.metadata.get("chunk_type", "recall"),
@@ -1251,7 +1294,6 @@ async def process_pdf(
 # ─── BM25 检索（真正基于倒排索引的关键词检索）────────────
 def _tokenize(text: str) -> list[str]:
     """简单中英文混合分词"""
-    import re
     chinese = re.findall(r'[\u4e00-\u9fff]+', text)
     english = re.findall(r'[a-zA-Z0-9]+', text)
     tokens = chinese + english
@@ -1417,7 +1459,6 @@ def hybrid_search(vectorstore, query: str, query_embedding_fn, k: int = 10) -> l
     Fix: BM25 改为在全量 chunks 上构建（而非仅在向量候选集上），
          消除偏差累积，实现向量 + BM25 真正独立融合。
     """
-    import re
 
     # ── 1. 获取全量 chunks（用于 BM25 全量索引）────────
     # 分批获取避免大集合内存压力，同时确保拿到所有 chunks
