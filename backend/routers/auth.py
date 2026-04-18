@@ -3,7 +3,7 @@ Router: 认证 — /auth/register, /auth/login
 Phase 0.8: 手机号 + 密码登录（无短信验证）
 """
 import uuid
-from fastapi import APIRouter, HTTPException, Depends, Header
+from fastapi import APIRouter, HTTPException, Depends, Header, Cookie, Response
 from pydantic import BaseModel
 
 from auth import create_access_token, verify_token, hash_password, verify_password
@@ -12,6 +12,8 @@ from data import save_users, assign_default_folder
 from folders_db import create as create_folder
 from config import PAPERS_DIR
 from rate_limit import check_login_rate_limit, _record_failure, clear_login_failures
+
+COOKIE_MAX_AGE = 7 * 24 * 60 * 60  # 7 days in seconds
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -39,14 +41,31 @@ class RegisterResponse(BaseModel):
 class SetPasswordRequest(BaseModel):
     password: str
 
-def get_current_user(authorization: str = Header(None)):
-    """依赖注入：从 Authorization header 解析当前登录用户"""
-    if not authorization:
+def get_current_user(
+    authorization: str = Header(None, alias="Authorization"),
+    rag_token: str = Cookie(None, alias="rag_token"),
+):
+    """依赖注入：从 Authorization header 或 rag_token Cookie 解析当前登录用户
+
+    支持两种认证方式：
+    1. Authorization: Bearer <token>  (标准 Header)
+    2. Cookie: rag_token=<token>      (WebView/嵌入式浏览器兼容)
+    """
+    # 优先使用 Authorization header，其次使用 Cookie
+    token = None
+    if authorization:
+        try:
+            scheme, token = authorization.split()
+            if scheme.lower() != "bearer":
+                raise HTTPException(401, "无效的认证方式")
+        except ValueError:
+            raise HTTPException(401, "无效的 Authorization 格式")
+    elif rag_token:
+        token = rag_token
+    else:
         raise HTTPException(401, "未提供认证信息")
+
     try:
-        scheme, token = authorization.split()
-        if scheme.lower() != "bearer":
-            raise HTTPException(401, "无效的认证方式")
         payload = verify_token(token)
         user_id = payload.get("user_id")
         if not user_id:
@@ -55,7 +74,9 @@ def get_current_user(authorization: str = Header(None)):
         if user_id not in db:
             raise HTTPException(401, "用户不存在")
         return user_id, db[user_id]
-    except (ValueError, KeyError):
+    except HTTPException:
+        raise
+    except Exception:
         raise HTTPException(401, "无效的 Token")
 
 
@@ -88,7 +109,7 @@ async def register(req: RegisterRequest):
 
 
 @router.post("/login", response_model=TokenResponse)
-async def login(req: LoginRequest):
+async def login(req: LoginRequest, response: Response):
     check_login_rate_limit(req.phone)
     phone, password = req.phone.strip(), req.password
     user = users_by_phone.get(phone)
@@ -101,6 +122,18 @@ async def login(req: LoginRequest):
 
     clear_login_failures(req.phone)
     token = create_access_token({"sub": user["phone"], "user_id": user["user_id"]})
+
+    # 设置 HttpOnly Cookie（WebView 环境比 localStorage 更稳定）
+    response.set_cookie(
+        key="rag_token",
+        value=token,
+        max_age=COOKIE_MAX_AGE,
+        httponly=True,
+        samesite="lax",
+        secure=False,  # 生产环境设为 True 并启用 HTTPS
+        path="/",
+    )
+
     return {
         "access_token": token,
         "token_type": "bearer",
