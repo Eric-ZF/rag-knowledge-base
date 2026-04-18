@@ -305,6 +305,8 @@ class MiniMaxChatClient:
                     time.sleep(1 + attempt * 2)
                     continue
                 content = result["choices"][0]["message"]["content"]
+                # 过滤掉 reasoning 标签（MiniMax M2.7 模型输出）
+                content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL)
                 if content is None:
                     last_error = f"MiniMax content 为空 (attempt {attempt+1}/3)"
                     time.sleep(1 + attempt * 2)
@@ -370,27 +372,34 @@ class MiniMaxChatClient:
                     resp.close()
                     raise RuntimeError(f"HTTP {resp.status}: {body[:200]}")
                 
-                # 逐行解析 SSE 流
-                chunk_data = b""
-                for line in resp.stream(64):
-                    chunk_data += line
-                    while b"\n" in chunk_data:
-                        line_bytes, chunk_data = chunk_data.split(b"\n", 1)
-                        line_str = line_bytes.decode("utf-8", errors="replace").strip()
-                        if not line_str.startswith("data: "):
-                            continue
-                        data_str = line_str[6:].strip()
-                        if data_str == "[DONE]":
-                            return
-                        try:
-                            data = json.loads(data_str)
-                            # MiniMax 流式格式：choices[0].delta.content
-                            content = data.get("choices", [{}])[0].get("delta", {}).get("content", "")
-                            if content:
-                                yield content
-                        except json.JSONDecodeError:
-                            continue
-                return
+                # 非流式调用 → 完整响应 → 过滤 thinking 标签 → 流式输出
+                # 避免 SSE streaming 的状态机复杂度和边缘 case
+                resp = self.session.post(
+                    self.endpoint,
+                    json={
+                        "model": model,
+                        "messages": messages,
+                        "max_tokens": max_tokens,
+                        "temperature": temperature,
+                    },
+                    headers={
+                        "Authorization": f"Bearer {self.api_key}",
+                        "GroupId": self.group_id,
+                        "Content-Type": "application/json",
+                    },
+                    timeout=(10, 60),
+                )
+                if resp.status_code == 529:
+                    raise RuntimeError("MiniMax 529")
+                resp.raise_for_status()
+                result = resp.json()
+                content = (result.get("choices") or [{}])[0].get("message", {}).get("content") or ""
+                # 过滤 thinking 标签（MiniMax M2.7 模型的推理过程标签）
+                content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL)
+                # 逐字符流式输出（模拟打字机效果）
+                for ch in content:
+                    yield ch
+
             except Exception as e:
                 last_error = str(e)
                 if attempt < 2:

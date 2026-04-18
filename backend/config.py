@@ -46,8 +46,8 @@ CHAT_MODEL = "MiniMax-M2.7"
 # ─── Jina AI Embedding 配置 ─────────────────────────
 # 使用 jina-embeddings-v5-text-small（1024维，多语言支持好）
 # API Key 必须通过环境变量设置，不允许硬编码
-EMBEDDING_MODEL = "jina-embeddings-v4"
-EMBEDDING_DIM = 2048
+EMBEDDING_MODEL = "jina-embeddings-v5-text-small"
+EMBEDDING_DIM = 1024
 JINA_API_KEY = os.getenv("JINA_API_KEY", "")
 if not JINA_API_KEY:
     raise RuntimeError("❌ JINA_API_KEY 环境变量未设置。请在 backend/.env 中添加 JINA_API_KEY=<你的Key>")

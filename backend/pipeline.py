@@ -259,6 +259,34 @@ def parse_pdf_plumber(pdf_path: str) -> tuple[list[Document], str, dict]:
         pdf_meta["authors"] = authors if isinstance(authors, str) else "; ".join(str(a) for a in authors)
         pdf_meta["publisher"] = doc_info.get("Producer", "") or ""
 
+        # 从首页文本提取标题和作者（CNKI 格式）
+        if not pdf_meta.get("authors") or not pdf_meta.get("title"):
+            try:
+                import re as _re
+                first_page = pdf.pages[0].extract_text() or "" if pdf.pages else ""
+                if first_page:
+                    nl = chr(10)
+                    first_lines = [l.strip() for l in first_page.split(nl) if l.strip()]
+                    author_pat = _re.compile(r'^[一-龥]{2,4}(?:\s|·)[一-龥]{2,4}(?:[\s·][一-龥]{2,4})*$')
+                    if not pdf_meta.get("authors"):
+                        for line in first_lines[:5]:
+                            if author_pat.match(line):
+                                pdf_meta["authors"] = line
+                                break
+                    if not pdf_meta.get("title"):
+                        skip_indices = set()
+                        for i, line in enumerate(first_lines[:4]):
+                            if len(line) <= 5 or author_pat.match(line):
+                                skip_indices.add(i)
+                        title_parts = [l for i, l in enumerate(first_lines[:4]) if i not in skip_indices]
+                        if title_parts:
+                            pdf_meta["title"] = ''.join(title_parts)
+                    doi_match = _re.search(r'(10\.\d{4,}/[^\s' + chr(0x3000) + chr(0x00a0) + r']+)', first_page)
+                    if doi_match:
+                        pdf_meta["doi"] = doi_match.group(1).rstrip('.,;')
+            except Exception:
+                pass
+
         table_count = 0
         current_section_title = ""
 

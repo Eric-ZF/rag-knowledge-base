@@ -486,11 +486,11 @@ async def list_papers(folder_id: str | None = None, user_info: tuple = Depends(g
             "folder_id": p.get("folder_id"),
             "title": p.get("title", ""),
             "status": p.get("status", ""),
-            "chunks_count": p.get("chunks_count"),
             "created_at": p.get("created_at", ""),
             "authors": p.get("authors", ""),
             "year": p.get("year"),
             "journal": p.get("journal", ""),
+            "doi": p.get("doi", ""),
         }
         for p in papers
         if p.get("user_id") == user_id and p.get("status") == "ready"

@@ -66,10 +66,12 @@ def save_users() -> None:
     _save(USERS_DB_FILE, _users_db)
 
 def get_papers_db() -> dict:
-    return _papers_db
+    """返回全量论文（读穿透）"""
+    return _load(PAPERS_DB_FILE)
 
 def get_paper(paper_id: str) -> dict | None:
-    return _papers_db.get(paper_id)
+    """按 ID 读取论文（读穿透）"""
+    return _load(PAPERS_DB_FILE).get(paper_id)
 
 def upsert_paper(paper_id: str, data: dict) -> None:
     with _lock:
@@ -88,20 +90,25 @@ def delete_paper(paper_id: str) -> None:
         _save(PAPERS_DB_FILE, _papers_db)
 
 def get_user_papers(user_id: str) -> list[dict]:
-    """返回属于指定用户的论文（按 folder_id 分组）"""
-    return [p for p in _papers_db.values() if p.get("user_id") == user_id]
+    """返回属于指定用户的论文。
+    
+    读穿透策略：每次直接从磁盘加载，确保 rebuild 等外部进程
+    写入后能立即反映最新状态，对用户完全透明。
+    """
+    return [p for p in _load(PAPERS_DB_FILE).values() if p.get("user_id") == user_id]
 
 def get_folder_papers(folder_id: str) -> list[dict]:
-    """返回属于指定文件夹的论文"""
-    return [p for p in _papers_db.values() if p.get("folder_id") == folder_id]
+    """返回属于指定文件夹的论文（读穿透）"""
+    return [p for p in _load(PAPERS_DB_FILE).values() if p.get("folder_id") == folder_id]
 
 def move_papers_to_folder(paper_ids: list[str], target_folder_id: str) -> None:
     """批量移动论文到目标文件夹"""
     with _lock:
+        data = _load(PAPERS_DB_FILE)
         for pid in paper_ids:
-            if pid in _papers_db:
-                _papers_db[pid]["folder_id"] = target_folder_id
-        _save(PAPERS_DB_FILE, _papers_db)
+            if pid in data:
+                data[pid]["folder_id"] = target_folder_id
+        _save(PAPERS_DB_FILE, data)
 
 def assign_default_folder(user_id: str, folder_id: str) -> None:
     """为用户设置默认文件夹"""

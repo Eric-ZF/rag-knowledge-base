@@ -358,19 +358,89 @@ sudo systemctl restart rag-backend
 
 | 风险 | 缓解 |
 |------|------|
-| 重构期间功能损坏 | 先做 AuthScreen 验证登录，新旧并行各跑 1 天 |
+| 重构期间功能损坏 | **平行部署**：React app 放 `/app/`，nginx 配置切换开关，坏了可秒切回原版 |
 | SSE 流式处理复杂 | `useSSE` hook 单独测试，OK 后再接入 ChatPanel |
-| Tailwind 首次引入增加复杂度 | 先用 CDN 版，不用 PostCSS 构建，直接 `<script src="cdn...tailwind.js">` |
 | API URL 硬编码 | 构建时注入 `VITE_API_BASE`，测试/生产分离 |
 | 样式不一致 | 参考现有 `index.html` 的 CSS 值，逐组件迁移验证 |
+| 部署后出现未知 bug | 回滚：把 `index.html` 重新复制到 `/var/www/rag/`，重启 nginx |
 
 ---
 
-## 十、里程碑
+## 十、零风险部署策略
+
+### 平行部署（推荐）
+
+```
+当前状态:  /var/www/rag/index.html  → Vanilla JS
+
+重构完成:  /var/www/rag/index.html  → nginx 指向 original/ (备份)
+          /var/www/rag/app/         → React 构建产物
+
+切换方式:  修改 nginx root 一行配置，nginx reload
+回滚方式:  改回 root，nginx reload（5 秒回滚）
+```
+
+**备份原版：**
+```bash
+cp -r /var/www/rag /var/www/rag.original_backup
+```
+
+**切换脚本：**
+```bash
+# 切换到 React
+cp -r /root/.openclaw/workspace/rag-knowledge-base/phase0/frontend/dist/* /var/www/rag/
+# 回滚到原版
+cp -r /var/www/rag.original_backup/* /var/www/rag/
+```
+
+---
+
+## 十一、Tailwind CDN 方案（无构建）
+
+不需要 npm + PostCSS + Vite CSS 处理，直接用 CDN script，最快上手：
+
+```html
+<!-- index.html (React app) -->
+<!DOCTYPE html>
+<html>
+<head>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            ink: { 900:'#111827', 800:'#1f2937', 700:'#374151', ... },
+            accent: { DEFAULT: '#2563eb', hover: '#1d4ed8' }
+          }
+        }
+      }
+    }
+  </script>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="module" src="/src/main.jsx"></script>
+</body>
+</html>
+```
+
+**优点：**
+- 无需 `npm install tailwindcss`
+- 无需 PostCSS 配置
+- CSS 类在浏览器实时 JIT 编译
+- 开发时 `vite dev` 正常，生产构建 CSS bundle 极小
+
+---
+
+## 十二、压缩版里程碑（5-7 天）
 
 | 里程碑 | 目标 | 验收标准 |
 |--------|------|----------|
-| M1: 登录可用 | Day 3 | 登录/注册/登出正常，样式一致 |
-| M2: 左侧完整 | Day 5 | 文件夹+上传+论文列表 100% 功能 |
-| M3: 聊天完整 | Day 7 | 提问+流式+引用展示正常 |
-| M4: 生产上线 | Day 10 | 全流程端到端测试通过 |
+| **M0: 脚手架** | Day 1 上午 | Vite + React 跑通，AuthScreen 能登录 |
+| M1: 左侧完整 | Day 2-3 | 文件夹+上传+论文列表 100% 功能 |
+| M2: 聊天完整 | Day 4-5 | 提问+流式+引用展示正常 |
+| M3: 生产上线 | Day 6-7 | 全流程端到端，nginx 切换完成 |
+
+**每天一个小里程碑，降低延期风险。**
