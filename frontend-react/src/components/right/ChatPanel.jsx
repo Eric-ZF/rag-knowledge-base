@@ -63,6 +63,56 @@ function CopyBtn({ text }) {
   )
 }
 
+
+// Standard academic citations list
+function CitationsList({ citations }) {
+  if (!citations || citations.length === 0) return null
+  return (
+    <div style={{
+      marginTop: '10px', padding: '12px 14px',
+      background: 'rgba(99,102,241,0.04)',
+      borderRadius: '12px',
+      border: '1px solid rgba(99,102,241,0.12)',
+    }}>
+      <div style={{
+        fontSize: '11px', fontWeight: '700', color: '#6366f1',
+        marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '4px',
+      }}>
+        <BookOpen size={11} />
+        参考来源
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+        {citations.map((cit, i) => (
+          <div key={i} style={{ fontSize: '12px', color: 'var(--c-text)', lineHeight: '1.5' }}>
+            <span style={{ color: '#6366f1', fontWeight: '600', marginRight: '4px' }}>
+              [{i + 1}]
+            </span>
+            <span style={{ fontWeight: '600' }}>{cit.title || '未知论文'}</span>
+            {cit.authors && <span style={{ color: 'var(--c-muted)' }}> — {cit.authors}</span>}
+            {cit.year && <span style={{ color: 'var(--c-muted)' }}>, {cit.year}</span>}
+            {cit.section_type && cit.section_type !== 'body' && (
+              <span style={{ color: 'var(--c-muted)', fontSize: '11px' }}>
+                {' '}({cit.section_type === 'abstract' ? '摘要' : cit.section_type === 'introduction' ? '引言' : cit.section_type === 'method' ? '方法' : cit.section_type === 'result' ? '结果' : cit.section_type === 'conclusion' ? '结论' : cit.section_type}, p.{cit.page_number})
+              </span>
+            )}
+            {cit.content && (
+              <div style={{
+                marginTop: '3px', marginLeft: '16px', fontSize: '11px',
+                color: 'var(--c-muted)', borderLeft: '2px solid rgba(99,102,241,0.2)',
+                paddingLeft: '8px', fontStyle: 'italic',
+                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                maxWidth: '460px',
+              }}>
+                「{cit.content.slice(0, 80)}{cit.content.length > 80 ? '…' : ''}」
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 // Single message bubble
 function Bubble({ msg, index }) {
   const isUser = msg.role === 'user'
@@ -167,6 +217,11 @@ function Bubble({ msg, index }) {
           )}
         </div>
 
+        {/* Citations list */}
+        {!isUser && !msg.thinking && msg.citations && msg.citations.length > 0 && !typing && (
+          <CitationsList citations={msg.citations} />
+        )}
+
         {/* Copy button for AI answers */}
         {!isUser && !msg.thinking && !typing && msg.content && (
           <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '4px' }}>
@@ -258,7 +313,7 @@ export default function ChatPanel({ folderIds = [] }) {
               fullContent = data.answer || fullContent
               setMessages(prev => prev.map(m =>
                 m.id === assistantId
-                  ? { ...m, content: fullContent, thinking: false }
+                  ? { ...m, content: fullContent, thinking: false, citations: data.citations || [], meta: data.meta || {} }
                   : m
               ))
             }
