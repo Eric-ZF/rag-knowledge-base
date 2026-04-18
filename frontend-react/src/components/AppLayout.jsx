@@ -13,6 +13,7 @@ export default function MainLayout() {
 
   return (
     <div style={{
+      animation: 'scaleIn 0.4s cubic-bezier(0.4,0,0.2,1) both',
       display: 'flex', flexDirection: 'column',
       height: '100vh', overflow: 'hidden',
       background: 'var(--c-bg)',

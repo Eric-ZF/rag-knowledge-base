@@ -185,10 +185,21 @@ export default function PaperList({ folderId }) {
 
       {/* Empty */}
       {papers.length === 0 && !loading && (
-        <div style={{ textAlign: 'center', padding: '40px 0', color: '#9ca3af' }}>
-          <div style={{ fontSize: '32px', marginBottom: '10px' }}>📄</div>
-          <p style={{ fontSize: '13px' }}>暂无论文</p>
-          <p style={{ fontSize: '12px', color: '#d1d5db', marginTop: '4px' }}>上传 PDF 开始使用</p>
+        <div style={{
+          textAlign: 'center', padding: '36px 16px', color: '#9ca3af',
+          animation: 'fadeIn 0.4s ease both',
+        }}>
+          <div style={{ fontSize: '40px', marginBottom: '12px', animation: 'float 3s ease-in-out infinite' }}>📄</div>
+          <p style={{ fontSize: '13px', fontWeight: '500', color: '#6b7280', marginBottom: '4px' }}>暂无论文</p>
+          <p style={{ fontSize: '12px', color: '#d1d5db' }}>上传 PDF 开始使用</p>
+          <div style={{
+            marginTop: '14px', padding: '10px 14px',
+            background: 'rgba(99,102,241,0.04)',
+            borderRadius: '10px', border: '1px solid rgba(99,102,241,0.1)',
+            fontSize: '11px', color: '#9ca3af',
+          }}>
+            支持 CNKI、万方、Google Scholar 等论文
+          </div>
         </div>
       )}
 
