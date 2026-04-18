@@ -36,6 +36,33 @@ function renderMd(content) {
   return <div dangerouslySetInnerHTML={{ __html: marked.parse(content) }} />
 }
 
+function CopyBtn({ text }) {
+  const [copied, setCopied] = useState(false)
+  const handleCopy = () => {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    })
+  }
+  return (
+    <button
+      onClick={handleCopy}
+      title="复制答案"
+      style={{
+        background: 'none', border: 'none', cursor: 'pointer',
+        padding: '3px 6px', borderRadius: '6px', fontSize: '10px',
+        color: copied ? '#10b981' : 'var(--c-muted)',
+        transition: 'all 0.15s', display: 'flex', alignItems: 'center', gap: '3px',
+        fontFamily: 'inherit',
+      }}
+      onMouseOver={e => e.currentTarget.style.background = 'var(--c-accent-soft)'}
+      onMouseOut={e => e.currentTarget.style.background = 'none'}
+    >
+      {copied ? '✓ 已复制' : '复制'}
+    </button>
+  )
+}
+
 // Single message bubble
 function Bubble({ msg, index }) {
   const isUser = msg.role === 'user'
@@ -111,8 +138,8 @@ function Bubble({ msg, index }) {
           background: isUser
             ? 'linear-gradient(135deg, #667eea, #764ba2)'
             : 'rgba(255,255,255,0.92)',
-          border: isUser ? 'none' : '1px solid rgba(0,0,0,0.06)',
-          color: isUser ? 'white' : '#374151',
+          border: isUser ? 'none' : '1px solid var(--c-border)',
+          color: isUser ? 'white' : 'var(--c-text)',
           fontSize: '14px', lineHeight: '1.65',
           boxShadow: isUser
             ? '0 4px 16px rgba(102,126,234,0.35)'
@@ -121,7 +148,7 @@ function Bubble({ msg, index }) {
           minWidth: '60px',
         }}>
           {msg.thinking ? (
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#6b7280', fontSize: '13px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--c-muted)', fontSize: '13px' }}>
               <Sparkles size={13} style={{ color: '#6366f1' }} />
               正在检索 & 生成答案
               <TypingDots />
@@ -139,6 +166,13 @@ function Bubble({ msg, index }) {
             renderMd(displayText)
           )}
         </div>
+
+        {/* Copy button for AI answers */}
+        {!isUser && !msg.thinking && !typing && msg.content && (
+          <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '4px' }}>
+            <CopyBtn text={msg.content} />
+          </div>
+        )}
       </div>
 
       {/* User Avatar */}

@@ -12,6 +12,11 @@ export default function ChatInput() {
   const [mode, setMode] = useState('default')
   const textareaRef = useRef()
 
+  const autoResize = (el) => {
+    el.style.height = 'auto'
+    el.style.height = Math.min(el.scrollHeight, 120) + 'px'
+  }
+
   useEffect(() => {
     textareaRef.current?.focus()
   }, [])
@@ -50,9 +55,9 @@ export default function ChatInput() {
                 padding: '5px 12px', borderRadius: '999px', fontSize: '12px',
                 fontWeight: active ? '600' : '500',
                 cursor: 'pointer', transition: 'all 0.15s',
-                border: active ? '1.5px solid #6366f1' : '1.5px solid #e5e7eb',
-                background: active ? 'rgba(99,102,241,0.08)' : 'white',
-                color: active ? '#6366f1' : '#6b7280',
+                border: active ? '1.5px solid #6366f1' : '1.5px solid var(--c-border)',
+                background: active ? 'rgba(99,102,241,0.08)' : 'var(--c-surface)',
+                color: active ? '#6366f1' : 'var(--c-muted',
                 boxShadow: active ? '0 0 0 3px rgba(99,102,241,0.08)' : 'none',
               }}
             >
@@ -66,8 +71,8 @@ export default function ChatInput() {
       {/* Input row */}
       <div style={{
         display: 'flex', alignItems: 'flex-end', gap: '10px',
-        background: 'white', borderRadius: '16px',
-        border: '1.5px solid #e5e7eb',
+        background: 'var(--c-surface)', borderRadius: '16px',
+        border: '1.5px solid var(--c-border)',
         padding: '10px 14px',
         transition: 'border-color 0.15s, box-shadow 0.15s',
       }}
@@ -78,12 +83,12 @@ export default function ChatInput() {
           ref={textareaRef}
           rows={1}
           value={text}
-          onChange={e => setText(e.target.value)}
+          onChange={e => { setText(e.target.value); autoResize(e.target) }}
           onKeyDown={handleKey}
           placeholder="问我关于你论文库的任何问题…"
           style={{
             flex: 1, resize: 'none', border: 'none', outline: 'none',
-            fontSize: '14px', lineHeight: '1.6', color: '#374151',
+            fontSize: '14px', lineHeight: '1.6', color: 'var(--c-text)',
             background: 'transparent', maxHeight: '120px',
             fontFamily: 'inherit',
           }}

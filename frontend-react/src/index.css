@@ -229,8 +229,13 @@ html.dark .placeholder\:text-\[\#b0b8c8\]::placeholder {
 /* ===== Scrollbar ===== */
 ::-webkit-scrollbar { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.12); border-radius: 99px; }
-::-webkit-scrollbar-thumb:hover { background: rgba(0,0,0,0.2); }
+::-webkit-scrollbar-thumb { background: rgba(99,102,241,0.15); border-radius: 99px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(99,102,241,0.3); }
+html.dark ::-webkit-scrollbar-thumb { background: rgba(129,140,248,0.2); }
+html.dark ::-webkit-scrollbar-thumb:hover { background: rgba(129,140,248,0.35); }
+
+/* ===== Selection ===== */
+::selection { background: rgba(99,102,241,0.2); color: inherit; }
 
 /* ===== Toast ===== */
 .toast-success { background: linear-gradient(135deg, #10b981, #059669); color: white; }
