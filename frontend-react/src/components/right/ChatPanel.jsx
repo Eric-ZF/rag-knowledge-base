@@ -217,6 +217,8 @@ export default function ChatPanel({ folderIds = [] }) {
 
     const controller = new AbortController()
     abortRef.current = controller
+    // Capture controller — so finally always aborts THIS stream, not the latest
+    const capturedController = controller
 
     const userMsg = {
       id: Date.now(), role: 'user', content: text,
@@ -315,7 +317,8 @@ export default function ChatPanel({ folderIds = [] }) {
         ))
       }
     } finally {
-      // Always release the guard, even if session was superseded by a newer call
+      // Cancel our own stream — capturedController is stable, unlike abortRef which gets overwritten
+      capturedController.abort()
       busyRef.current = false
     }
   }, [folderIds])
