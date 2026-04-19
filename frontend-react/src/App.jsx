@@ -1,5 +1,6 @@
 import { AuthProvider, useAuth } from './contexts/AuthContext.jsx'
 import { ToastProvider } from './contexts/ToastContext.jsx'
+import { CitationProvider } from './contexts/CitationContext.jsx'
 import AuthScreen from './components/AuthScreen.jsx'
 import MainLayout from './components/AppLayout.jsx'
 
@@ -12,7 +13,9 @@ export default function App() {
   return (
     <AuthProvider>
       <ToastProvider>
-        <AppInner />
+        <CitationProvider>
+          <AppInner />
+        </CitationProvider>
       </ToastProvider>
     </AuthProvider>
   )

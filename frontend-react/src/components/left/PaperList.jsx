@@ -1,7 +1,8 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { getPapers, deletePaper } from '../../lib/api.js'
 import { useAuth } from '../../contexts/AuthContext.jsx'
 import { useToast } from '../../contexts/ToastContext.jsx'
+import { useCitation } from '../../contexts/CitationContext.jsx'
 import { Trash2, FileText, BookOpen } from 'lucide-react'
 
 function StatusBadge({ status }) {
@@ -25,104 +26,169 @@ function StatusBadge({ status }) {
 }
 
 function PaperCard({ paper, onDelete }) {
+  const { addCitation, removeCitation, citations } = useCitation()
+  const tooltipRef = useRef(null)
+  const isCited = citations.some(c => c.paper_id === paper.paper_id)
+  const isReady = paper.status === 'ready'
+
+  const showTooltip = (e) => {
+    if (!isReady) return
+    const tip = tooltipRef.current
+    if (!tip) return
+    tip.style.opacity = '1'
+    const rect = e.currentTarget.getBoundingClientRect()
+    const tH = tip.offsetHeight
+    let top = rect.top - tH - 10
+    let left = rect.left + (rect.width - tip.offsetWidth) / 2
+    if (top < 8) top = rect.bottom + 10
+    if (left < 8) left = 8
+    if (left + tip.offsetWidth > window.innerWidth - 8) left = window.innerWidth - tip.offsetWidth - 8
+    tip.style.top = top + 'px'
+    tip.style.left = left + 'px'
+  }
+
+  const hideTooltip = () => {
+    if (tooltipRef.current) tooltipRef.current.style.opacity = '0'
+  }
+
+  const handleCite = (e) => {
+    e.stopPropagation()
+    if (isCited) {
+      removeCitation(paper.paper_id)
+    } else {
+      addCitation({ paper_id: paper.paper_id, title: paper.title || '无标题', authors: paper.authors || '', year: paper.year || '' })
+    }
+  }
+
   return (
-    <div style={{
-      background: 'rgba(255,255,255,0.85)',
-      backdropFilter: 'blur(12px)',
-      border: '1px solid rgba(0,0,0,0.06)',
-      borderRadius: '14px',
-      padding: '14px',
-      marginBottom: '10px',
-      transition: 'all 0.2s cubic-bezier(0.4,0,0.2,1)',
-      cursor: 'default',
-      position: 'relative',
-      overflow: 'hidden',
-    }}
-      onMouseOver={e => {
-        e.currentTarget.style.transform = 'translateY(-2px)'
-        e.currentTarget.style.boxShadow = '0 8px 24px rgba(99,102,241,0.12)'
-        e.currentTarget.style.borderColor = 'rgba(99,102,241,0.2)'
-        const btn = e.currentTarget.querySelector('.delete-btn')
-        if (btn) btn.style.opacity = '1'
-      }}
-      onMouseOut={e => {
-        e.currentTarget.style.transform = 'translateY(0)'
-        e.currentTarget.style.boxShadow = 'none'
-        e.currentTarget.style.borderColor = 'rgba(0,0,0,0.06)'
-        const btn = e.currentTarget.querySelector('.delete-btn')
-        if (btn) btn.style.opacity = '0'
-      }}
-    >
-      {/* Accent bar */}
-      <div style={{
-        position: 'absolute', top: 0, left: 0, right: 0, height: '3px',
-        background: 'linear-gradient(90deg, #667eea, #764ba2)',
-        borderRadius: '14px 14px 0 0',
-        opacity: 0.7,
-      }} />
-
-      <div style={{ display: 'flex', alignItems: 'flex-start', gap: '10px' }}>
-        {/* Icon */}
-        <div style={{
-          width: '36px', height: '36px', borderRadius: '10px', flexShrink: 0,
-          background: 'linear-gradient(135deg, rgba(99,102,241,0.1), rgba(118,75,162,0.1))',
-          border: '1px solid rgba(99,102,241,0.12)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-        }}>
-          <FileText size={16} style={{ color: '#6366f1' }} />
-        </div>
-
-        <div style={{ flex: 1, minWidth: 0 }}>
-          {/* Title */}
-          <p style={{
-            fontSize: '13px', fontWeight: '600', color: '#1a1a2e',
-            lineHeight: '1.4', marginBottom: '6px',
-            overflow: 'hidden', display: '-webkit-box',
-            WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
-          }}>
-            {paper.title || '无标题'}
-          </p>
-
-          {/* Metadata */}
-          {(paper.authors || paper.journal || paper.year || paper.doi) && (
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginBottom: '8px' }}>
-              {paper.authors && (
-                <span style={{ fontSize: '10px', color: '#6b7280', maxWidth: '140px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {paper.authors}
-                </span>
-              )}
-              {paper.journal && (
-                <span style={{ display: 'flex', alignItems: 'center', gap: '2px', fontSize: '10px', color: '#6366f1' }}>
-                  <BookOpen size={9} /> {paper.journal}{paper.year ? ` · ${paper.year}` : ''}
-                </span>
-              )}
-            </div>
-          )}
-
-          {/* Status */}
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <StatusBadge status={paper.status} />
-          </div>
-        </div>
-
-        {/* Delete */}
-        <button
-          className="delete-btn"
-          onClick={() => onDelete(paper.paper_id)}
-          title="删除论文"
+    <>
+      {/* Tooltip */}
+      {isReady && (
+        <div
+          ref={tooltipRef}
           style={{
+            position: 'fixed', background: '#1f2937', color: 'white',
+            fontSize: '12px', padding: '4px 10px', borderRadius: '6px',
+            whiteSpace: 'nowrap', pointerEvents: 'none', zIndex: 9999,
             opacity: 0, transition: 'opacity 0.15s',
-            background: 'none', border: 'none', cursor: 'pointer',
-            padding: '4px', borderRadius: '6px', color: '#9ca3af',
-            flexShrink: 0,
+            boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
           }}
-          onMouseOver={e => e.currentTarget.style.color = '#ef4444'}
-          onMouseOut={e => e.currentTarget.style.color = '#9ca3af'}
         >
-          <Trash2 size={13} />
-        </button>
+          {isCited ? '再次点击移除引用' : '点击卡片可直接引用'}
+        </div>
+      )}
+
+      <div style={{
+        background: isCited
+          ? 'rgba(99,102,241,0.06)'
+          : 'rgba(255,255,255,0.85)',
+        backdropFilter: 'blur(12px)',
+        border: isCited
+          ? '1.5px solid rgba(99,102,241,0.35)'
+          : '1px solid rgba(0,0,0,0.06)',
+        borderRadius: '14px',
+        padding: '14px',
+        marginBottom: '10px',
+        transition: 'all 0.2s cubic-bezier(0.4,0,0.2,1)',
+        cursor: isReady ? 'pointer' : 'default',
+        position: 'relative',
+        overflow: 'hidden',
+      }}
+        onClick={isReady ? handleCite : undefined}
+        onMouseOver={e => {
+          if (!isReady) return
+          e.currentTarget.style.transform = 'translateY(-2px)'
+          e.currentTarget.style.boxShadow = '0 8px 24px rgba(99,102,241,0.12)'
+          e.currentTarget.style.borderColor = 'rgba(99,102,241,0.25)'
+          const btn = e.currentTarget.querySelector('.delete-btn')
+          if (btn) btn.style.opacity = '1'
+          showTooltip(e)
+        }}
+        onMouseOut={e => {
+          if (!isReady) return
+          e.currentTarget.style.transform = 'translateY(0)'
+          e.currentTarget.style.boxShadow = 'none'
+          e.currentTarget.style.borderColor = isCited ? 'rgba(99,102,241,0.35)' : 'rgba(0,0,0,0.06)'
+          const btn = e.currentTarget.querySelector('.delete-btn')
+          if (btn) btn.style.opacity = '0'
+          hideTooltip()
+        }}
+      >
+        {/* Accent bar */}
+        <div style={{
+          position: 'absolute', top: 0, left: 0, right: 0, height: '3px',
+          background: isCited
+            ? 'linear-gradient(90deg, #6366f1, #8b5cf6)'
+            : 'linear-gradient(90deg, #667eea, #764ba2)',
+          borderRadius: '14px 14px 0 0',
+          opacity: isCited ? 1 : 0.7,
+        }} />
+
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: '10px' }}>
+          {/* Icon */}
+          <div style={{
+            width: '36px', height: '36px', borderRadius: '10px', flexShrink: 0,
+            background: isCited
+              ? 'linear-gradient(135deg, rgba(99,102,241,0.15), rgba(139,92,246,0.15))'
+              : 'linear-gradient(135deg, rgba(99,102,241,0.1), rgba(118,75,162,0.1))',
+            border: isCited ? '1px solid rgba(99,102,241,0.2)' : '1px solid rgba(99,102,241,0.12)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}>
+            <FileText size={16} style={{ color: isCited ? '#6366f1' : '#6366f1' }} />
+          </div>
+
+          <div style={{ flex: 1, minWidth: 0 }}>
+            {/* Title */}
+            <p style={{
+              fontSize: '13px', fontWeight: '600', color: '#1a1a2e',
+              lineHeight: '1.4', marginBottom: '6px',
+              overflow: 'hidden', display: '-webkit-box',
+              WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
+            }}>
+              {paper.title || '无标题'}
+            </p>
+
+            {/* Metadata */}
+            {(paper.authors || paper.journal || paper.year || paper.doi) && (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginBottom: '8px' }}>
+                {paper.authors && (
+                  <span style={{ fontSize: '10px', color: '#6b7280', maxWidth: '140px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {paper.authors}
+                  </span>
+                )}
+                {paper.journal && (
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '2px', fontSize: '10px', color: '#6366f1' }}>
+                    <BookOpen size={9} /> {paper.journal}{paper.year ? ` · ${paper.year}` : ''}
+                  </span>
+                )}
+              </div>
+            )}
+
+            {/* Status */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <StatusBadge status={paper.status} />
+            </div>
+          </div>
+
+          {/* Delete */}
+          <button
+            className="delete-btn"
+            onClick={(e) => { e.stopPropagation(); e.preventDefault(); onDelete(paper.paper_id) }}
+            title="删除论文"
+            style={{
+              opacity: 0, transition: 'opacity 0.15s',
+              background: 'none', border: 'none', cursor: 'pointer',
+              padding: '4px', borderRadius: '6px', color: '#9ca3af',
+              flexShrink: 0,
+            }}
+            onMouseOver={e => e.currentTarget.style.color = '#ef4444'}
+            onMouseOut={e => e.currentTarget.style.color = '#9ca3af'}
+          >
+            <Trash2 size={13} />
+          </button>
+        </div>
       </div>
-    </div>
+    </>
   )
 }
 
@@ -192,14 +258,6 @@ export default function PaperList({ folderId }) {
           <div style={{ fontSize: '40px', marginBottom: '12px', animation: 'float 3s ease-in-out infinite' }}>📄</div>
           <p style={{ fontSize: '13px', fontWeight: '500', color: '#6b7280', marginBottom: '4px' }}>暂无论文</p>
           <p style={{ fontSize: '12px', color: '#d1d5db' }}>上传 PDF 开始使用</p>
-          <div style={{
-            marginTop: '14px', padding: '10px 14px',
-            background: 'rgba(99,102,241,0.04)',
-            borderRadius: '10px', border: '1px solid rgba(99,102,241,0.1)',
-            fontSize: '11px', color: '#9ca3af',
-          }}>
-            支持 CNKI、万方、Google Scholar 等论文
-          </div>
         </div>
       )}
 
