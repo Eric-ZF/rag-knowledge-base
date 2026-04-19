@@ -196,14 +196,10 @@ function Bubble({ msg, index }) {
 
 export default function ChatPanel({ folderIds = [] }) {
   const [messages, setMessages] = useState([WELCOME])
-  const [sendingState, setSendingState] = useState(false)
   const bottomRef = useRef()
   const abortRef = useRef(null)
-  const sendFnRef = useRef(null)
-  // Use a ref for in-flight guard (synchronous, not batched)
-  const sendingRef = useRef(false)
-  // Session ID to ignore stale events
-  const sessionRef = useRef(null)
+  // Synchronous boolean guard — set BEFORE any async work
+  const busyRef = useRef(false)
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -211,19 +207,16 @@ export default function ChatPanel({ folderIds = [] }) {
 
   const sendMessage = useCallback(async (text, mode = 'default') => {
     if (!text.trim()) return
-    // Synchronous guard: prevent concurrent calls
-    if (sendingRef.current) return
-    sendingRef.current = true
-    setSendingState(true)
 
-    // Abort any previous in-flight request
+    // Synchronous double-call guard ( React StrictMode + user double-click safe)
+    if (busyRef.current) return
+    busyRef.current = true
+
+    // Cancel any previous in-flight stream
     abortRef.current?.abort()
+
     const controller = new AbortController()
     abortRef.current = controller
-
-    // Mark this session
-    const thisSession = Date.now()
-    sessionRef.current = thisSession
 
     const userMsg = {
       id: Date.now(), role: 'user', content: text,
@@ -249,12 +242,10 @@ export default function ChatPanel({ folderIds = [] }) {
       const decoder = new TextDecoder()
       let lineBuf = ''
       let tokBuf = ''
-      let answerRendered = false
+      let answerFinalized = false // Guard: only first 'done' event fires
 
       const flushLine = (line) => {
-        // Ignore events from a stale session
-        if (sessionRef.current !== thisSession) return
-        if (answerRendered) return
+        if (answerFinalized) return
         const trimmed = line.trim()
         if (!trimmed.startsWith('data: ')) return
         try {
@@ -265,8 +256,8 @@ export default function ChatPanel({ folderIds = [] }) {
               m.id === assistantId ? { ...m, content: tokBuf, thinking: false } : m
             ))
           } else if (data.type === 'done') {
-            if (answerRendered) return
-            answerRendered = true
+            if (answerFinalized) return
+            answerFinalized = true
             tokBuf = data.answer || tokBuf
             setMessages(prev => prev.map(m =>
               m.id === assistantId
@@ -274,26 +265,34 @@ export default function ChatPanel({ folderIds = [] }) {
                 : m
             ))
           }
-        } catch {}
+        } catch {
+          // Skip malformed SSE data
+        }
       }
 
-      let streamDone = false
-      while (!streamDone) {
-        const { value, done } = await reader.read()
-        streamDone = done
-        if (value) {
-          const text = decoder.decode(value, { stream: !streamDone })
-          for (const ch of text) {
-            if (ch === '\n') {
-              if (lineBuf.trim()) flushLine(lineBuf)
-              lineBuf = ''
-            } else if (ch !== '\r') {
-              lineBuf += ch
-            }
+      while (true) {
+        let value, done
+        try {
+          ({ value, done } = await reader.read())
+        } catch (err) {
+          // AbortError or other read errors — exit cleanly
+          break
+        }
+        if (done) break
+        if (!value) continue
+
+        const text = decoder.decode(value, { stream: true })
+        for (const ch of text) {
+          if (ch === '\n') {
+            if (lineBuf.trim()) flushLine(lineBuf)
+            lineBuf = ''
+          } else if (ch !== '\r') {
+            lineBuf += ch
           }
         }
       }
-      // Flush trailing data
+
+      // Flush any remaining buffered content after stream ends
       const trailing = decoder.decode()
       for (const ch of trailing) {
         if (ch === '\n') {
@@ -306,21 +305,23 @@ export default function ChatPanel({ folderIds = [] }) {
       if (lineBuf.trim()) flushLine(lineBuf)
 
     } catch (e) {
-      if (e.name === 'AbortError') return
-      if (sessionRef.current !== thisSession) return
-      setMessages(prev => prev.map(m =>
-        m.id === assistantId
-          ? { ...m, content: '生成答案失败: ' + (e.message || '未知错误'), thinking: false }
-          : m
-      ))
-    } finally {
-      if (sessionRef.current === thisSession) {
-        sendingRef.current = false
-        setSendingState(false)
+      if (e.name === 'AbortError') {
+        // Cancelled by a subsequent sendMessage call — clean exit
+      } else {
+        setMessages(prev => prev.map(m =>
+          m.id === assistantId
+            ? { ...m, content: '生成答案失败: ' + (e.message || '未知错误'), thinking: false }
+            : m
+        ))
       }
+    } finally {
+      // Always release the guard, even if session was superseded by a newer call
+      busyRef.current = false
     }
   }, [folderIds])
 
+  // Stable ref to latest sendMessage (no re-registration on every render)
+  const sendFnRef = useRef(sendMessage)
   sendFnRef.current = sendMessage
 
   useEffect(() => {
