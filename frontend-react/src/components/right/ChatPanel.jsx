@@ -194,31 +194,35 @@ function Bubble({ msg, index }) {
   )
 }
 
+// ─── Module-level stream session tracking ───────────────────────────────────
+// This is the CORRECT place for window.__reactSendMessage — outside the component,
+// stable across renders and remounts. Never inside a useEffect.
+let _activeStreamId = 0          // Monotonically increasing session counter
+let _sendFn = null               // Stable reference to the latest sendMessage
+
+function _handleSendMessage(text, mode) {
+  _sendFn?.(text, mode)
+}
+
+if (typeof window !== 'undefined') {
+  window.__reactSendMessage = _handleSendMessage
+}
+
 export default function ChatPanel({ folderIds = [] }) {
   const [messages, setMessages] = useState([WELCOME])
   const bottomRef = useRef()
-  const abortRef = useRef(null)
-  // Synchronous boolean guard — set BEFORE any async work
   const busyRef = useRef(false)
 
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages])
-
+  // Keep _sendFn updated with the latest sendMessage
   const sendMessage = useCallback(async (text, mode = 'default') => {
     if (!text.trim()) return
 
-    // Synchronous double-call guard ( React StrictMode + user double-click safe)
+    // Synchronous double-call guard
     if (busyRef.current) return
     busyRef.current = true
 
-    // Cancel any previous in-flight stream
-    abortRef.current?.abort()
-
-    const controller = new AbortController()
-    abortRef.current = controller
-    // Capture controller — so finally always aborts THIS stream, not the latest
-    const capturedController = controller
+    // Increment streamId — this session is now the active one
+    const myStreamId = ++_activeStreamId
 
     const userMsg = {
       id: Date.now(), role: 'user', content: text,
@@ -228,6 +232,8 @@ export default function ChatPanel({ folderIds = [] }) {
 
     const assistantId = Date.now() + 1
     setMessages(prev => [...prev, { id: assistantId, role: 'assistant', content: '', thinking: true }])
+
+    const controller = new AbortController()
 
     try {
       const token = localStorage.getItem('token')
@@ -244,9 +250,11 @@ export default function ChatPanel({ folderIds = [] }) {
       const decoder = new TextDecoder()
       let lineBuf = ''
       let tokBuf = ''
-      let answerFinalized = false // Guard: only first 'done' event fires
+      let answerFinalized = false
 
       const flushLine = (line) => {
+        // Guard: ignore if a newer stream has taken over
+        if (myStreamId !== _activeStreamId) return
         if (answerFinalized) return
         const trimmed = line.trim()
         if (!trimmed.startsWith('data: ')) return
@@ -254,18 +262,23 @@ export default function ChatPanel({ folderIds = [] }) {
           const data = JSON.parse(trimmed.slice(6))
           if (data.type === 'token') {
             tokBuf += data.content
-            setMessages(prev => prev.map(m =>
-              m.id === assistantId ? { ...m, content: tokBuf, thinking: false } : m
-            ))
+            if (myStreamId === _activeStreamId) {
+              setMessages(prev => prev.map(m =>
+                m.id === assistantId ? { ...m, content: tokBuf, thinking: false } : m
+              ))
+            }
           } else if (data.type === 'done') {
+            if (myStreamId !== _activeStreamId) return
             if (answerFinalized) return
             answerFinalized = true
             tokBuf = data.answer || tokBuf
-            setMessages(prev => prev.map(m =>
-              m.id === assistantId
-                ? { ...m, content: tokBuf, thinking: false, citations: data.citations || [] }
-                : m
-            ))
+            if (myStreamId === _activeStreamId) {
+              setMessages(prev => prev.map(m =>
+                m.id === assistantId
+                  ? { ...m, content: tokBuf, thinking: false, citations: data.citations || [] }
+                  : m
+              ))
+            }
           }
         } catch {
           // Skip malformed SSE data
@@ -276,8 +289,7 @@ export default function ChatPanel({ folderIds = [] }) {
         let value, done
         try {
           ({ value, done } = await reader.read())
-        } catch (err) {
-          // AbortError or other read errors — exit cleanly
+        } catch {
           break
         }
         if (done) break
@@ -294,7 +306,7 @@ export default function ChatPanel({ folderIds = [] }) {
         }
       }
 
-      // Flush any remaining buffered content after stream ends
+      // Flush trailing data
       const trailing = decoder.decode()
       for (const ch of trailing) {
         if (ch === '\n') {
@@ -307,9 +319,7 @@ export default function ChatPanel({ folderIds = [] }) {
       if (lineBuf.trim()) flushLine(lineBuf)
 
     } catch (e) {
-      if (e.name === 'AbortError') {
-        // Cancelled by a subsequent sendMessage call — clean exit
-      } else {
+      if (e.name !== 'AbortError' && myStreamId === _activeStreamId) {
         setMessages(prev => prev.map(m =>
           m.id === assistantId
             ? { ...m, content: '生成答案失败: ' + (e.message || '未知错误'), thinking: false }
@@ -317,20 +327,18 @@ export default function ChatPanel({ folderIds = [] }) {
         ))
       }
     } finally {
-      // Cancel our own stream — capturedController is stable, unlike abortRef which gets overwritten
-      capturedController.abort()
-      busyRef.current = false
+      if (myStreamId === _activeStreamId) {
+        busyRef.current = false
+      }
     }
   }, [folderIds])
 
-  // Stable ref to latest sendMessage (no re-registration on every render)
-  const sendFnRef = useRef(sendMessage)
-  sendFnRef.current = sendMessage
+  // Update the module-level send function
+  _sendFn = sendMessage
 
   useEffect(() => {
-    window.__reactSendMessage = (...args) => sendFnRef.current?.(...args)
-    return () => { window.__reactSendMessage = null }
-  }, [])
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [messages])
 
   const isEmpty = messages.length === 1 && messages[0].id === 'welcome'
 
