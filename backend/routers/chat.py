@@ -1,7 +1,7 @@
 """
 Router: 问答 — /chat, /chat/stream
 """
-import json, time
+import json, time, asyncio
 from typing import Literal
 from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import StreamingResponse
@@ -207,13 +207,37 @@ async def chat_stream(req: ChatRequest, user_info: tuple = Depends(get_current_u
     ]
 
     async def stream_generator():
+        import queue, threading
         try:
             yield "data: " + json.dumps({"type": "start", "embedding_ms": round(embedding_ms)}) + "\n\n"
-            client = MiniMaxChatClient(api_key=MINIMAX_API_KEY, group_id=MINIMAX_GROUP_ID)
+
+            # Run synchronous token stream in a background thread so we don't block the async event loop
+            token_queue: queue.Queue = queue.Queue()
+            done_sentinel = object()
+
+            def token_producer():
+                try:
+                    client = MiniMaxChatClient(api_key=MINIMAX_API_KEY, group_id=MINIMAX_GROUP_ID)
+                    for token in client.stream_chat(messages=messages, model=CHAT_MODEL, max_tokens=4096, temperature=0.3):
+                        token_queue.put(token)
+                except Exception as e:
+                    token_queue.put(e)
+                finally:
+                    token_queue.put(done_sentinel)
+
+            thread = threading.Thread(target=token_producer, daemon=True)
+            thread.start()
+
             full_answer = ""
-            for token in client.stream_chat(messages=messages, model=CHAT_MODEL, max_tokens=4096, temperature=0.3):
-                full_answer += token
-                yield "data: " + json.dumps({"type": "token", "content": token}) + "\n\n"
+            while True:
+                item = await asyncio.to_thread(token_queue.get)
+                if item is done_sentinel:
+                    break
+                if isinstance(item, Exception):
+                    raise item
+                full_answer += item
+                yield "data: " + json.dumps({"type": "token", "content": item}) + "\n\n"
+
             cite_set = {}
             for c in chunks:
                 pid = c["paper_id"]
