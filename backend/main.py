@@ -125,6 +125,11 @@ app.add_middleware(
 # ─── 健康检查 ───────────────────────────────────────
 from datetime import datetime
 
+@app.get("/api/version")
+def get_version():
+    """返回当前部署版本，前端据此检测是否需要强制刷新"""
+    return {"version": "20260419", "deployed": True}
+
 @app.get("/health")
 async def health():
     return {
