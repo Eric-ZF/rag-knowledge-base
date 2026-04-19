@@ -1916,9 +1916,10 @@
       const decoder = new TextDecoder();
 
       // 流式 SSE：过滤思考块，只渲染 Markdown
-      let done = false;
+      let streamDone = false;
       let lineBuf = '';
       let tokBuf = '';
+      let answerRendered = false; // 防止 done 事件被处理两次导致答案重复渲染
 
       // 提取思考块（不删除），返回 { thinking, answer }
       const extractThinking = (text) => {
@@ -2108,6 +2109,8 @@
             }
             tokBuf += data.content;
           } else if (data.type === 'done') {
+            if (answerRendered) return; // 已渲染过，忽略
+            answerRendered = true;
             const { thinking, answer } = extractThinking(tokBuf);
             // stripPageRefs 在 renderMarkdown 内部处理，引用块由 AST 层过滤
             renderThinkingBlocks(thinking);
@@ -2143,18 +2146,17 @@
               warnEl.textContent = data.quality_warning;
               assistantEl.appendChild(warnEl);
             }
-            done = true;
           } else if (data.type === 'error') {
             throw new Error(data.message || '流式生成失败');
           }
         } catch {}
       };
 
-      while (!done) {
-        const { value, done: streamDone } = await reader.read();
-        done = streamDone;
+      while (!streamDone) {
+        const { value, done: rs } = await reader.read();
+        streamDone = rs;
         if (value) {
-          const text = decoder.decode(value, { stream: !done });
+          const text = decoder.decode(value, { stream: !streamDone });
           for (const ch of text) {
             if (ch === '\n') {
               if (lineBuf.trim()) flushLine();
@@ -2165,6 +2167,17 @@
           }
         }
       }
+      // stream 结束后，decoder 用 stream:false 再 flush 一次，确保尾部数据被处理
+      const trailing = decoder.decode();
+      for (const ch of trailing) {
+        if (ch === '\n') {
+          if (lineBuf.trim()) flushLine();
+          lineBuf = '';
+        } else if (ch !== '\r') {
+          lineBuf += ch;
+        }
+      }
+      if (lineBuf.trim()) flushLine();
     } catch(e) {
       msgs.removeChild(assistantEl);
       errEl.textContent = e.message;
