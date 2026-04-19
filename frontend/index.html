@@ -275,10 +275,33 @@
       align-items: flex-start;
       gap: 8px;
       background: var(--paper);
+      cursor: pointer;
+      position: relative;
     }
     .paper-item:hover {
       box-shadow: var(--shadow-hover);
       border-color: var(--accent-border);
+    }
+    /* 悬停提示：点击卡片引用 */
+    .paper-item.ready::after {
+      content: '点击卡片可直接引用';
+      position: absolute;
+      bottom: calc(100% + 6px);
+      left: 50%;
+      transform: translateX(-50%);
+      background: var(--ink-800);
+      color: white;
+      font-size: 12px;
+      padding: 4px 10px;
+      border-radius: 6px;
+      white-space: nowrap;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.18s;
+      z-index: 100;
+    }
+    .paper-item.ready:hover::after {
+      opacity: 1;
     }
     .paper-item .paper-body { flex: 1; min-width: 0; }
     .paper-item .title { font-size: 13.5px; font-weight: 600; color: var(--ink-900); line-height: 1.4; }
@@ -309,12 +332,7 @@
       white-space: nowrap;
       transition: all 0.15s;
     }
-    .paper-actions .cite-btn:hover {
-      border-color: var(--accent);
-      color: var(--accent);
-      background: rgba(37,99,235,0.06);
-    }
-    .paper-actions .delete-btn:hover {
+.paper-actions .delete-btn:hover {
       border-color: var(--danger);
       color: var(--danger);
       background: rgba(220,38,38,0.06);
@@ -1713,7 +1731,7 @@
         return;
       }
       container.innerHTML = papers.filter(p => p.status === 'ready').map(p => `
-        <div class="paper-item" data-paper-id="${escapeHtml(p.paper_id)}">
+        <div class="paper-item ready" data-paper-id="${escapeHtml(p.paper_id)}" data-title="${escapeHtml(p.title)}" data-authors="${escapeHtml(p.authors || '')}" data-year="${escapeHtml(p.year || '')}">
           <input type="checkbox" class="paper-check" data-paper-id="${escapeHtml(p.paper_id)}" onclick="event.stopPropagation()" style="flex-shrink:0;width:16px;height:16px;cursor:pointer;accent-color:var(--accent);" />
           <div class="paper-body">
             <div class="title">${escapeHtml(p.title)}</div>
@@ -1730,23 +1748,27 @@
             }</span>
           </div>
           <div class="paper-actions">
-            <button class="action-btn cite-btn" data-action="cite" data-id="${escapeHtml(p.paper_id)}" data-title="${escapeHtml(p.title)}" data-authors="${escapeHtml(p.authors || '')}" data-year="${escapeHtml(p.year || '')}">📎 引用</button>
             <button class="action-btn delete-btn" data-action="delete" data-id="${escapeHtml(p.paper_id)}" data-title="${escapeHtml(p.title)}">🗑️</button>
           </div>
         </div>`).join('');
 
-      // 事件委托：论文卡片按钮
-      container.querySelectorAll('.paper-actions button').forEach(btn => {
+      // 事件委托：点击论文卡片引用 / 删除
+      container.querySelectorAll('.paper-item').forEach(item => {
+        item.addEventListener('click', e => {
+          // 忽略删除按钮的点击（删除按钮自己处理）
+          if (e.target.closest('.delete-btn')) return;
+          const paperId = item.dataset.paperId;
+          const title = item.dataset.title;
+          const authors = item.dataset.authors || '';
+          const year = item.dataset.year || '';
+          insertPaperCitation(paperId, title, authors, year);
+        });
+      });
+      // 删除按钮独立处理
+      container.querySelectorAll('.delete-btn').forEach(btn => {
         btn.addEventListener('click', e => {
           e.stopPropagation();
-          const action = btn.dataset.action;
-          const paperId = btn.dataset.id;
-          const title = btn.dataset.title;
-          if (action === 'cite') {
-            insertPaperCitation(paperId, title, btn.dataset.authors, btn.dataset.year);
-          } else if (action === 'delete') {
-            confirmDelete(paperId, title);
-          }
+          confirmDelete(btn.dataset.id, btn.dataset.title);
         });
       });
     } catch(e) {
