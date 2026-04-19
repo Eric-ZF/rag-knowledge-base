@@ -92,20 +92,21 @@ function CitationsList({ citations }) {
 
 function Bubble({ msg, index }) {
   const isUser = msg.role === 'user'
-  const [visibleLen, setVisibleLen] = useState(isUser || !msg.content ? msg.content?.length || 0 : 0)
+  const [visibleLen, setVisibleLen] = useState(isUser || !msg.content ? (msg.content?.length || 0) : 0)
   const [typing, setTyping] = useState(false)
   const typingRef = useRef(null)
   const contentRef = useRef(msg.content || '')
 
   useEffect(() => {
-    if (isUser || !msg.content) { setVisibleLen(msg.content?.length || 0); return }
+    if (isUser || !msg.content) {
+      setVisibleLen(msg.content?.length || 0)
+      return
+    }
     contentRef.current = msg.content
     setVisibleLen(0)
     setTyping(true)
-    let i = 0
     clearInterval(typingRef.current)
     typingRef.current = setInterval(() => {
-      i++
       setVisibleLen(prev => {
         if (prev >= contentRef.current.length) {
           clearInterval(typingRef.current)
@@ -195,11 +196,14 @@ function Bubble({ msg, index }) {
 
 export default function ChatPanel({ folderIds = [] }) {
   const [messages, setMessages] = useState([WELCOME])
-  const [sending, setSending] = useState(false)
+  const [sendingState, setSendingState] = useState(false)
   const bottomRef = useRef()
   const abortRef = useRef(null)
-  // Stable ref for sendMessage so useEffect always has latest
   const sendFnRef = useRef(null)
+  // Use a ref for in-flight guard (synchronous, not batched)
+  const sendingRef = useRef(false)
+  // Session ID to ignore stale events
+  const sessionRef = useRef(null)
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -207,18 +211,25 @@ export default function ChatPanel({ folderIds = [] }) {
 
   const sendMessage = useCallback(async (text, mode = 'default') => {
     if (!text.trim()) return
+    // Synchronous guard: prevent concurrent calls
+    if (sendingRef.current) return
+    sendingRef.current = true
+    setSendingState(true)
 
-    // Cancel any in-flight request
+    // Abort any previous in-flight request
     abortRef.current?.abort()
     const controller = new AbortController()
     abortRef.current = controller
+
+    // Mark this session
+    const thisSession = Date.now()
+    sessionRef.current = thisSession
 
     const userMsg = {
       id: Date.now(), role: 'user', content: text,
       time: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }),
     }
     setMessages(prev => [...prev, userMsg])
-    setSending(true)
 
     const assistantId = Date.now() + 1
     setMessages(prev => [...prev, { id: assistantId, role: 'assistant', content: '', thinking: true }])
@@ -238,9 +249,11 @@ export default function ChatPanel({ folderIds = [] }) {
       const decoder = new TextDecoder()
       let lineBuf = ''
       let tokBuf = ''
-      let answerRendered = false // Guard: prevent done event from being processed twice
+      let answerRendered = false
 
       const flushLine = (line) => {
+        // Ignore events from a stale session
+        if (sessionRef.current !== thisSession) return
         if (answerRendered) return
         const trimmed = line.trim()
         if (!trimmed.startsWith('data: ')) return
@@ -280,7 +293,7 @@ export default function ChatPanel({ folderIds = [] }) {
           }
         }
       }
-      // Flush trailing data after stream ends
+      // Flush trailing data
       const trailing = decoder.decode()
       for (const ch of trailing) {
         if (ch === '\n') {
@@ -294,17 +307,20 @@ export default function ChatPanel({ folderIds = [] }) {
 
     } catch (e) {
       if (e.name === 'AbortError') return
+      if (sessionRef.current !== thisSession) return
       setMessages(prev => prev.map(m =>
         m.id === assistantId
           ? { ...m, content: '生成答案失败: ' + (e.message || '未知错误'), thinking: false }
           : m
       ))
     } finally {
-      setSending(false)
+      if (sessionRef.current === thisSession) {
+        sendingRef.current = false
+        setSendingState(false)
+      }
     }
-  }, [folderIds]) // No `sending` dependency — stable function reference
+  }, [folderIds])
 
-  // Keep sendFnRef current so the window reference always has the latest
   sendFnRef.current = sendMessage
 
   useEffect(() => {
