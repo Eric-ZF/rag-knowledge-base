@@ -282,13 +282,9 @@
       box-shadow: var(--shadow-hover);
       border-color: var(--accent-border);
     }
-    /* 悬停提示：点击卡片引用 */
-    .paper-item.ready::after {
-      content: '点击卡片可直接引用';
-      position: absolute;
-      bottom: calc(100% + 6px);
-      left: 50%;
-      transform: translateX(-50%);
+    /* 悬停提示（JS 动态创建） */
+    .paper-tooltip {
+      position: fixed;
       background: var(--ink-800);
       color: white;
       font-size: 12px;
@@ -296,12 +292,9 @@
       border-radius: 6px;
       white-space: nowrap;
       pointer-events: none;
+      z-index: 9999;
       opacity: 0;
-      transition: opacity 0.18s;
-      z-index: 100;
-    }
-    .paper-item.ready:hover::after {
-      opacity: 1;
+      transition: opacity 0.15s;
     }
     .paper-item .paper-body { flex: 1; min-width: 0; }
     .paper-item .title { font-size: 13.5px; font-weight: 600; color: var(--ink-900); line-height: 1.4; }
@@ -1755,7 +1748,6 @@
       // 事件委托：点击论文卡片引用 / 删除
       container.querySelectorAll('.paper-item').forEach(item => {
         item.addEventListener('click', e => {
-          // 忽略删除按钮的点击（删除按钮自己处理）
           if (e.target.closest('.delete-btn')) return;
           const paperId = item.dataset.paperId;
           const title = item.dataset.title;
@@ -1763,6 +1755,35 @@
           const year = item.dataset.year || '';
           insertPaperCitation(paperId, title, authors, year);
         });
+      });
+
+      // 悬停提示（JS 动态创建，避免 ::after 被 overflow 裁剪）
+      let tooltipEl = null;
+      const showTooltip = (e, text) => {
+        if (!tooltipEl) {
+          tooltipEl = document.createElement('div');
+          tooltipEl.className = 'paper-tooltip';
+          document.body.appendChild(tooltipEl);
+        }
+        tooltipEl.textContent = text;
+        tooltipEl.style.opacity = '1';
+        const rect = e.currentTarget.getBoundingClientRect();
+        const tRect = tooltipEl.getBoundingClientRect();
+        let left = rect.left + (rect.width - tRect.width) / 2;
+        let top = rect.top - tRect.height - 8;
+        // 边界修正
+        if (left < 8) left = 8;
+        if (left + tRect.width > window.innerWidth - 8) left = window.innerWidth - tRect.width - 8;
+        if (top < 8) top = rect.bottom + 8; // 下方放不下则改到上方
+        tooltipEl.style.left = left + 'px';
+        tooltipEl.style.top = top + 'px';
+      };
+      const hideTooltip = () => {
+        if (tooltipEl) tooltipEl.style.opacity = '0';
+      };
+      container.querySelectorAll('.paper-item.ready').forEach(item => {
+        item.addEventListener('mouseenter', e => showTooltip(e, '点击卡片可直接引用'));
+        item.addEventListener('mouseleave', hideTooltip);
       });
       // 删除按钮独立处理
       container.querySelectorAll('.delete-btn').forEach(btn => {
