@@ -504,6 +504,36 @@
       padding: 14px 24px 20px;
       background: #f5f4f2;
     }
+
+    /* 引用栏 */
+    .citation-bar {
+      display: flex; flex-wrap: wrap; gap: 6px;
+      margin-bottom: 8px; min-height: 0;
+    }
+    .citation-chip {
+      display: inline-flex; align-items: center; gap: 5px;
+      background: white; border: 1.5px solid var(--border);
+      border-radius: 20px; padding: 3px 8px 3px 10px;
+      font-size: 12.5px; color: var(--ink-600);
+      max-width: 340px; line-height: 1.3;
+      cursor: default;
+      transition: border-color 0.15s;
+    }
+    .citation-chip:hover { border-color: var(--accent); }
+    .citation-chip .cite-num {
+      color: var(--accent); font-weight: 700; flex-shrink: 0;
+    }
+    .citation-chip .cite-text {
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .citation-chip .cite-del {
+      background: none; border: none; cursor: pointer;
+      color: var(--ink-400); font-size: 14px; line-height: 1;
+      padding: 0 0 0 2px; flex-shrink: 0;
+      border-radius: 50%; transition: color 0.15s, background 0.15s;
+    }
+    .citation-chip .cite-del:hover { color: #ef4444; background: #fee2e2; }
+
     .chat-mode-row {
       display: flex; gap: 6px; margin-bottom: 8px; flex-wrap: wrap;
     }
@@ -967,6 +997,7 @@
         </div>
       </div>
       <div class="chat-input-area">
+        <div class="citation-bar" id="citation-bar"></div>
         <div class="chat-mode-row" id="chat-mode-row">
           <button class="mode-btn active" data-mode="default" onclick="setChatMode('default')">💬 默认问答</button>
           <button class="mode-btn" data-mode="methodology" onclick="setChatMode('methodology')">🔬 方法论审计</button>
@@ -1012,6 +1043,12 @@
       toast.classList.add('fade-out');
       setTimeout(() => toast.remove(), 320);
     }, duration);
+  }
+
+  /* ── 自动高度 ─────────────────────────────────────────── */
+  function autoResize(el) {
+    el.style.height = 'auto';
+    el.style.height = Math.min(el.scrollHeight, 320) + 'px';
   }
 
   /* ── API 基础 ──────────────────────────────────────────── */
@@ -1693,7 +1730,7 @@
             }</span>
           </div>
           <div class="paper-actions">
-            <button class="action-btn cite-btn" data-action="cite" data-id="${escapeHtml(p.paper_id)}" data-title="${escapeHtml(p.title)}">📎 引用</button>
+            <button class="action-btn cite-btn" data-action="cite" data-id="${escapeHtml(p.paper_id)}" data-title="${escapeHtml(p.title)}" data-authors="${escapeHtml(p.authors || '')}" data-year="${escapeHtml(p.year || '')}">📎 引用</button>
             <button class="action-btn delete-btn" data-action="delete" data-id="${escapeHtml(p.paper_id)}" data-title="${escapeHtml(p.title)}">🗑️</button>
           </div>
         </div>`).join('');
@@ -1706,7 +1743,7 @@
           const paperId = btn.dataset.id;
           const title = btn.dataset.title;
           if (action === 'cite') {
-            insertPaperCitation(paperId, title);
+            insertPaperCitation(paperId, title, btn.dataset.authors, btn.dataset.year);
           } else if (action === 'delete') {
             confirmDelete(paperId, title);
           }
@@ -1730,15 +1767,54 @@
   }
 
   /* ── 论文引用 ─────────────────────────────────────── */
-  function insertPaperCitation(paperId, title) {
+  let activeCitations = []; // [{paper_id, title, authors, year}]
+
+  function insertPaperCitation(paperId, title, authors, year) {
+    // 避免重复引用同一篇
+    if (activeCitations.some(c => c.paper_id === paperId)) {
+      showToast('已在引用列表中', 'info');
+      return;
+    }
+    activeCitations.push({ paper_id: paperId, title, authors: authors || '', year: year || '' });
+    renderCitationBar();
     const input = document.getElementById('chat-input');
-    const sep = input.value.trim() ? ' ' : '';
-    // 追加格式：引用论文：{标题}
-    input.value += sep + `引用论文：${title}`;
-    input.style.height = 'auto';
-    input.style.height = input.scrollHeight + 'px';
+    autoResize(input);
     input.focus();
     showToast(`已引用：${title}`, 'success');
+  }
+
+  function removeCitation(paperId) {
+    activeCitations = activeCitations.filter(c => c.paper_id !== paperId);
+    renderCitationBar();
+    const input = document.getElementById('chat-input');
+    autoResize(input);
+    input.focus();
+  }
+
+  function renderCitationBar() {
+    const bar = document.getElementById('citation-bar');
+    if (activeCitations.length === 0) {
+      bar.innerHTML = '';
+      return;
+    }
+    bar.innerHTML = activeCitations.map((c, i) => {
+      const num = i + 1;
+      const authorPart = c.authors ? ` (${c.authors}${c.year ? ', ' + c.year : ''})` : '';
+      const label = `> [${num}] ${c.title}${authorPart}`;
+      return `<div class="citation-chip" data-id="${escapeHtml(c.paper_id)}">
+        <span class="cite-num">[${num}]</span>
+        <span class="cite-text" title="${escapeHtml(c.title)}">${escapeHtml(c.title)}${escapeHtml(authorPart)}</span>
+        <button class="cite-del" onclick="removeCitation('${escapeHtml(c.paper_id)}')" title="移除引用">×</button>
+      </div>`;
+    }).join('');
+  }
+
+  function getCitationPrefix() {
+    return activeCitations.map((c, i) => {
+      const num = i + 1;
+      const authorPart = c.authors ? ` (${c.authors}${c.year ? ', ' + c.year : ''})` : '';
+      return `> [${num}] ${c.title}${authorPart}`;
+    }).join('\n');
   }
 
   /* ── 配额 ─────────────────────────────────────────── */
@@ -1772,20 +1848,28 @@
     if (sending) return;
     const input = document.getElementById('chat-input');
     const text = input.value.trim();
-    if (!text) return;
+    if (!text && activeCitations.length === 0) return;
 
     const btn = document.getElementById('btn-send');
     const errEl = document.getElementById('chat-error');
     errEl.classList.add('hidden');
 
+    // 附上引用头
+    const citePrefix = getCitationPrefix();
+    const citeBlock = citePrefix ? citePrefix + '\n\n' : '';
+    const fullText = citeBlock + text;
+    const displayText = citeBlock + text;
+
     // 显示用户消息
     const msgs = document.getElementById('chat-messages');
     const userMsgEl = document.createElement('div');
     userMsgEl.className = 'msg user';
-    userMsgEl.innerHTML = `<div class="bubble">${escapeHtml(text)}</div>`;
+    userMsgEl.innerHTML = `<div class="bubble">${escapeHtml(displayText)}</div>`;
     msgs.appendChild(userMsgEl);
     input.value = '';
-    input.style.height = 'auto';
+    activeCitations = [];
+    renderCitationBar();
+    autoResize(input);
 
         // 答案气泡（流式渲染，只显示 Markdown 回答）
     const assistantEl = document.createElement('div');
@@ -1816,7 +1900,7 @@
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          question: text,
+          question: fullText,
           folder_ids: currentFolderId ? [currentFolderId] : null,
           top_k: 3,
           mode: chatMode,
